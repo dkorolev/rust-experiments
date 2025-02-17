@@ -4,8 +4,8 @@ FROM alpine AS build
 # Intentionally not installing `cargo`, etc. But it does need `clang`.
 RUN apk add rustup clang musl
 
-# Init local rust via `rustup`, including the static target.
-RUN rustup-init -y -v -t x86_64-unknown-linux-musl --no-modify-path 
+# Init local rust via `rustup`, including static targets builder.
+RUN rustup-init -y -t x86_64-unknown-linux-musl --no-modify-path 
 RUN mv /root/.cargo/bin/* /usr/local/bin/
 
 # Build the project.
