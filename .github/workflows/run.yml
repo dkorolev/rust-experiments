@@ -1,0 +1,14 @@
+name: run
+
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: clone
+        uses: actions/checkout@v3
+      - name: run
+        run: (cd step00_hw; ./run.sh)
