@@ -1,7 +1,7 @@
-use axum::{routing::get, Router, serve};
+use axum::{routing::get, serve, Router};
 use std::net::SocketAddr;
-use tokio::{net::TcpListener, sync::mpsc};
 use tokio::signal::unix::{signal, SignalKind};
+use tokio::{net::TcpListener, sync::mpsc};
 
 #[tokio::main]
 async fn main() {
@@ -11,14 +11,15 @@ async fn main() {
     .route("/healthz", get(|| async { "OK\n" }))
     .route("/", get(|| async { "hello this is a rust http server\n" }))
     .route(
-        "/quit",
-        get({
-          let shutdown_tx = shutdown_tx.clone();
-          || async move {
-            let _ = shutdown_tx.send(()).await;
-            "yes i am shutting down\n"
-          }
-        }));
+      "/quit",
+      get({
+        let shutdown_tx = shutdown_tx.clone();
+        || async move {
+          let _ = shutdown_tx.send(()).await;
+          "yes i am shutting down\n"
+        }
+      }),
+    );
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();
