@@ -14,12 +14,9 @@ async fn main() {
         "/quit",
         get({
           let shutdown_tx = shutdown_tx.clone();
-          move || {
-            let shutdown_tx = shutdown_tx.clone();
-            async move {
-              let _ = shutdown_tx.send(()).await;
-              "yes i am shutting down\n"
-            }
+          || async move {
+            let _ = shutdown_tx.send(()).await;
+            "yes i am shutting down\n"
           }
         }));
 
