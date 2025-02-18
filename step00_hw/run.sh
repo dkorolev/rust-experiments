@@ -3,4 +3,4 @@
 set -e
 
 docker build . -t demo
-docker run -t demo
+docker run --rm -t demo

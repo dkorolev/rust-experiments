@@ -10,5 +10,7 @@ jobs:
     steps:
       - name: clone
         uses: actions/checkout@v3
-      - name: run
+      - name: step00
         run: (cd step00_hw; ./run.sh)
+      - name: step01
+        run: (cd step01_cmdline; ./run.sh)
