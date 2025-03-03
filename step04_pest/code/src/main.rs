@@ -34,6 +34,5 @@ fn traverse(token: Pair<'_, Rule>, indent: usize) {
 }
 
 fn main() {
-  let parsed = Grammar::parse(Rule::toplevel, "a + b a2 - b2 + 42").unwrap();
-  parsed.for_each(|e| traverse(e, 0));
+  Grammar::parse(Rule::toplevel, "a + b a2 - b2 + 42").unwrap().for_each(|e| traverse(e, 0));
 }
