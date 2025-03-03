@@ -1,29 +1,39 @@
-// Copied over from https://github.com/pest-parser/pest
-
-use pest_derive::Parser;
 use pest::Parser;
+use pest::iterators::Pair;
+use pest_derive::Parser;
 
 #[derive(Parser)]
-#[grammar = "ident.pest"]
-struct IdentParser;
+#[grammar = "grammar.pest"]
+struct Grammar;
+
+fn traverse(token: Pair<'_, Rule>, indent: usize) {
+  let (next_indent, proceed) = match token.as_rule() {
+    // These next two lines are unnecessary, since the terms are declared as `_{ ... }`, where `_` means "silent".
+    // Rule::toplevel => (0, true),
+    // Rule::term => (0, true),
+    Rule::identifier => {
+      println!("{}S: {}", " ".repeat(indent), token.as_str());
+      (2, true)
+    }
+    Rule::number => {
+      println!("{}N: {}", " ".repeat(indent), token.as_str());
+      (0, false)
+    }
+    Rule::op => {
+      println!("{}V: {}", " ".repeat(indent), token.as_str());
+      (0, false)
+    }
+    _ => {
+      println!("{}INTERNAL {:?} {}", " ".repeat(indent), token.as_rule(), token.as_str());
+      (2, true)
+    }
+  };
+  if proceed {
+    token.into_inner().for_each(|e| traverse(e, next_indent));
+  }
+}
 
 fn main() {
-    let pairs = IdentParser::parse(Rule::ident_list, "a1 b2").unwrap_or_else(|e| panic!("{}", e));
-
-    // Because ident_list is silent, the iterator will contain idents
-    for pair in pairs {
-        // A pair is a combination of the rule which matched and a span of input
-        println!("Rule:    {:?}", pair.as_rule());
-        println!("Span:    {:?}", pair.as_span());
-        println!("Text:    {}", pair.as_str());
-
-        // A pair can be converted to an iterator of the tokens which make it up:
-        for inner_pair in pair.into_inner() {
-            match inner_pair.as_rule() {
-                Rule::alpha => println!("Letter:  {}", inner_pair.as_str()),
-                Rule::digit => println!("Digit:   {}", inner_pair.as_str()),
-                _ => unreachable!()
-            };
-        }
-    }
+  let parsed = Grammar::parse(Rule::toplevel, "a + b a2 - b2 + 42").unwrap();
+  parsed.for_each(|e| traverse(e, 0));
 }
