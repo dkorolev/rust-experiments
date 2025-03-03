@@ -23,13 +23,14 @@ mod mermaid {
       }
     }
 
-    pub fn new_participant<S: AsRef<str>>(&self, s: S) -> Participant {
+    pub fn new_participant<S: Into<String>>(&self, s: S) -> Participant {
+      let s = s.into();
       let mut data = self.instance.borrow_mut();
       data.i += 1;
       let i = data.i;
       drop(data);
-      self.append(format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i));
-      Participant { canvas: self, i, _name: String::from(s.as_ref()) }
+      self.append(format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s, i));
+      Participant { canvas: self, i, _name: s }
     }
 
     fn append<S: AsRef<str>>(&self, s: S) {
