@@ -24,17 +24,12 @@ mod mermaid {
       let mut data = self.instance.borrow_mut();
       data.i += 1;
       let i = data.i; // or can just use data.i later on, doesn't matter
-      Canvas::append_into(
-        data,
-        &format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i),
-      );
+      drop(data);
+      self.append(&format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i));
       Participant { canvas: self, i, _name: String::from(s.as_ref()) }
     }
-    fn append_into<S: AsRef<str>>(mut data: std::cell::RefMut<Data>, s: S) {
-      data.contents.push_str(s.as_ref());
-    }
     fn append<S: AsRef<str>>(&self, s: S) {
-      Canvas::append_into(self.instance.borrow_mut(), s.as_ref());
+      self.instance.borrow_mut().contents.push_str(s.as_ref());
     }
     pub fn output<F>(&self, f: F)
     where
@@ -43,12 +38,12 @@ mod mermaid {
       f(&self.instance.borrow().contents)
     }
   }
-  impl<'a> Participant<'a> {
+  impl Participant<'_> {
     pub fn add_arrow_to(&self, rhs: &Participant, text: &str) {
       self.canvas.append(format!("    I{}->>I{}: {}\n", self.i, rhs.i, text));
     }
   }
-  impl<'a> Drop for Participant<'a> {
+  impl Drop for Participant<'_> {
     fn drop(&mut self) {
       self.canvas.append(format!("    destroy I{}\n    I{}-->>I0: destroy\n", self.i, self.i));
     }
