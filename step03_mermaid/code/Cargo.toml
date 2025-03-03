@@ -1,0 +1,3 @@
+[package]
+name = "mermaid"
+edition = "2024"
