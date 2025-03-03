@@ -14,9 +14,9 @@ WORKDIR /code
 RUN cargo build --release --target x86_64-unknown-linux-musl
 
 # Prepare the static binary.
-RUN cp ./target/x86_64-unknown-linux-musl/release/hw /
+RUN cp ./target/x86_64-unknown-linux-musl/release/mermaid /
 
 # The resulting container with the static binary only.
 FROM scratch
-COPY --from=build /hw /hw
-ENTRYPOINT ["/hw"]
+COPY --from=build /mermaid /mermaid
+ENTRYPOINT ["/mermaid"]
