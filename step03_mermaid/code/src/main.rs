@@ -1,6 +1,6 @@
 mod mermaid {
-  use std::fmt;
   use std::cell::RefCell;
+  use std::fmt;
   struct Data {
     contents: String,
     i: i32,
@@ -26,12 +26,12 @@ mod mermaid {
     pub fn new_participant<S: AsRef<str>>(&self, s: S) -> Participant {
       let mut data = self.instance.borrow_mut();
       data.i += 1;
-      let i = data.i; // or can just use data.i later on, doesn't matter
+      let i = data.i;
       drop(data);
       self.append(format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i));
       Participant { canvas: self, i, _name: String::from(s.as_ref()) }
     }
-    
+
     fn append<S: AsRef<str>>(&self, s: S) {
       self.instance.borrow_mut().contents.push_str(s.as_ref());
     }
@@ -39,7 +39,7 @@ mod mermaid {
 
   impl fmt::Display for Canvas {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.instance.borrow().contents)
+      write!(f, "{}", self.instance.borrow().contents)
     }
   }
 
