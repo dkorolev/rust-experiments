@@ -22,16 +22,13 @@ mod mermaid {
     }
     pub fn new_participant<S: AsRef<str>>(&self, s: S) -> Participant {
       let mut data = self.instance.borrow_mut();
-      let curr_i = {
-        let i: &mut i32 = &mut data.i;
-        *i = *i + 1;
-        *i
-      };
+      data.i += 1;
+      let i = data.i; // or can just use data.i later on, doesn't matter
       Canvas::append_into(
         data,
-        &format!("    create participant I{} as {}\n    I0-->>I{}: create\n", curr_i, s.as_ref(), curr_i),
+        &format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i),
       );
-      Participant { canvas: self, i: curr_i, _name: String::from(s.as_ref()) }
+      Participant { canvas: self, i, _name: String::from(s.as_ref()) }
     }
     fn append_into<S: AsRef<str>>(mut data: std::cell::RefMut<Data>, s: S) {
       data.contents.push_str(s.as_ref());
