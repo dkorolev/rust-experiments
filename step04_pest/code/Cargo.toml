@@ -1,2 +1,3 @@
 [package]
-name = "hw"
+name = "pest_example"
+edition = "2024"
