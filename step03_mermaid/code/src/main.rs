@@ -1,10 +1,12 @@
 mod mermaid {
+  use std::fmt;
+  use std::cell::RefCell;
   struct Data {
     contents: String,
     i: i32,
   }
   pub struct Canvas {
-    instance: std::cell::RefCell<Data>,
+    instance: RefCell<Data>,
   }
   pub struct Participant<'a> {
     canvas: &'a Canvas,
@@ -14,30 +16,33 @@ mod mermaid {
   impl Canvas {
     pub fn new() -> Self {
       Self {
-        instance: std::cell::RefCell::new(Data {
+        instance: RefCell::new(Data {
           contents: "sequenceDiagram\n    create participant I0 as root\n    autonumber\n".to_string(),
           i: 0,
         }),
       }
     }
+
     pub fn new_participant<S: AsRef<str>>(&self, s: S) -> Participant {
       let mut data = self.instance.borrow_mut();
       data.i += 1;
       let i = data.i; // or can just use data.i later on, doesn't matter
       drop(data);
-      self.append(&format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i));
+      self.append(format!("    create participant I{} as {}\n    I0-->>I{}: create\n", i, s.as_ref(), i));
       Participant { canvas: self, i, _name: String::from(s.as_ref()) }
     }
+    
     fn append<S: AsRef<str>>(&self, s: S) {
       self.instance.borrow_mut().contents.push_str(s.as_ref());
     }
-    pub fn output<F>(&self, f: F)
-    where
-      F: FnOnce(&String),
-    {
-      f(&self.instance.borrow().contents)
+  }
+
+  impl fmt::Display for Canvas {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.instance.borrow().contents)
     }
   }
+
   impl Participant<'_> {
     pub fn add_arrow_to(&self, rhs: &Participant, text: &str) {
       self.canvas.append(format!("    I{}->>I{}: {}\n", self.i, rhs.i, text));
@@ -75,5 +80,5 @@ fn main() {
     }
   }
 
-  canvas.output(|s| println!("{}", s));
+  println!("{}", canvas);
 }
