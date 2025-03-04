@@ -2,7 +2,7 @@
 
 set -e
 
-docker build . -t demo
+docker build -f ../Dockerfile.template . -t demo
 
 echo '```mermaid' >.mermaid.md
 docker run --rm -t demo | tee >>.mermaid.md
