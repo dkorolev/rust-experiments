@@ -1,2 +1,5 @@
 Cargo.lock
 target/
+
+# Using the `Dockerfile.template` in the root directory now.
+Dockerfile

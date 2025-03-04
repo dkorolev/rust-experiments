@@ -2,7 +2,7 @@
 
 set -e
 
-docker build . -t demo
+docker build -f ../Dockerfile.template . -t demo
 
 docker run --rm --network=bridge -p 3000:3000 -t demo &
 PID=$!
