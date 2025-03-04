@@ -3,9 +3,9 @@ use clap::Parser;
 #[derive(Parser)]
 struct Args {
   #[arg(long)]
-  a: u32,
+  a: i8,
   #[arg(long)]
-  b: u32,
+  b: i8,
 }
 
 fn main() {
