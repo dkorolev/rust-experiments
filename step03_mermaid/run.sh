@@ -9,4 +9,4 @@ docker run --rm -t demo | tee >>.mermaid.md
 echo '```' >>.mermaid.md
 
 # TODO(dkorolev): Fail with a nicer message, and add a git hook.
-diff mermaid.md .mermaid.md || echo 'Your `mermaid.md` file is not up to date.'
+diff -w mermaid.md .mermaid.md && echo "Passed!" || (echo 'Your `mermaid.md` file is not up to date.' && exit 1)
