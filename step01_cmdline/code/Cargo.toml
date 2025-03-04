@@ -2,5 +2,8 @@
 name = "add"
 edition = "2021"
 
+# [profile.release]
+# overflow-checks = true
+
 [dependencies]
 clap = { version = "4.0", features = ["derive"] }
