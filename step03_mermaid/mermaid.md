@@ -1,4 +1,5 @@
 ```mermaid
+foo
 sequenceDiagram
     create participant I0 as root
     autonumber
