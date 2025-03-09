@@ -1,7 +1,10 @@
 use axum::{routing::get, serve, Router};
+use hyper::header;
 use std::net::SocketAddr;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::{net::TcpListener, sync::mpsc};
+
+const SAMPLE_JSON: &str = include_str!("sample.json");
 
 #[tokio::main]
 async fn main() {
@@ -19,7 +22,8 @@ async fn main() {
           "yes i am shutting down\n"
         }
       }),
-    );
+    )
+    .route("/json", get(|| async { ([(header::CONTENT_TYPE, "application/json")], SAMPLE_JSON) }));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();

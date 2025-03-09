@@ -19,6 +19,8 @@ done
 
 curl -s localhost:3000
 
+curl -s localhost:3000/json
+
 curl -s localhost:3000/quit
 
 wait $PID
