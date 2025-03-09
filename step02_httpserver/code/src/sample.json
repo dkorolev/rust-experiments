@@ -1,1 +1,6 @@
-{"hello":"world","the_answer":42}
+{
+  "hello":"world",
+  "the_answer":42,
+  "_title": "Rust JSON",
+  "_favico": "data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgaGgAAAGEAQFWjyAjAAAAAElFTkSuQmCC"
+}

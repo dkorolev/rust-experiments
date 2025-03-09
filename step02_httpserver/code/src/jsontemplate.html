@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <!-- Can be changed with `._title`. -->
+  <title>JSON</title>
+
+  <!-- Can be changed with `._favicon`, orange 1x1 by default. -->
+  <link href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4v5QBAARLAaU/Dnq2AAAAAElFTkSuQmCC" rel="icon" type="image/x-icon" />
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #282c34;
+      color: white;
+      padding: 1px;
+    }
+    pre {
+      white-space: pre;
+      overflow-x: auto;
+      background: #1e1e1e;
+      padding: 15px;
+      border-radius: 5px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <script>
+    const data = {};
+  </script>
+  <pre id="json-output"></pre>
+  <script>
+  let favico = null;
+  if ('_title' in data && typeof data._title === 'string') {
+    document.title = data._title;
+    delete data._title;
+  }
+  if ('_favico' in data && typeof data._favico === 'string') {
+    favico = data._favico;
+    delete data._favico;
+  }
+  document.getElementById("json-output").innerHTML = JSON.stringify(data, null, 2);
+  if (favico) {
+    document.querySelector("link[rel~='icon']").href = favico;
+  }
+  </script>
+</body>
+
+</html>
