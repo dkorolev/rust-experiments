@@ -1,6 +1,48 @@
 {
-  "hello":"world",
-  "the_answer":42,
+  "hello": "world",
+  "the_answer": 42,
+  "list1": {
+    "orwell": 1984,
+    "adams": 42
+  },
+  "list2": {
+    "foo": true,
+    "bar": null,
+    "_links": {
+      "bar": "http://dima.ai?null"
+    }
+  },
+  "_links": {
+    "list1": {
+      "orwell": "http://dima.ai?1984",
+      "adams": "http://dima.ai?42",
+    }
+  },
+  "inner": {
+    "list3": {
+      "orwell": 1984,
+      "adams": 42
+    },
+    "list4": {
+      "foo": true,
+      "bar": null,
+      "_links": {
+        "bar": "http://dima.ai?inner_null"
+      }
+    },
+  },
+  "_links": {
+    "list1": {
+      "orwell": "http://dima.ai?1984",
+      "adams": "http://dima.ai?42",
+    },
+    "inner": {
+      "list3": {
+        "orwell": "http://dima.ai?inner_1984",
+        "adams": "http://dima.ai?inner_42",
+      }
+    }
+  },
   "_title": "Rust JSON",
   "_favico": "data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgaGgAAAGEAQFWjyAjAAAAAElFTkSuQmCC"
 }

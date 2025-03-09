@@ -26,11 +26,85 @@
       border-radius: 5px;
       overflow-x: auto;
     }
+    .string {
+      color: #ce9178;
+    }
+    .number {
+      color: #b5cea8;
+    }
+    .boolean {
+      color: #569cd6;
+    }
+    .null {
+      color: #569cd6;
+    }
+    .key {
+      color: #9cdcfe;
+    }
+    a {
+      color: #9cdcfe;
+    }
+    a:hover {
+      text-decoration: underline;
+    }
   </style>
 </head>
 
 <body>
   <script>
+    const escapeHtml = (str) => {
+      return str
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    };
+
+    const innerLinks = (value, links, i) => {
+      // NOTE(dkorolev): Support both top-level `_links` and inner-level `._links`, see the example.
+      if (value && value._links) {
+        return value._links;
+      } else if (links !== undefined && i in links) {
+        return links[i];
+      } else {
+        return undefined;
+      }
+    };
+
+    const createJson = (value, links, indent) => {
+      if (Array.isArray(value)) {
+        let s = `[\n`;
+        for (let i = 0; i < value.length; ++i) {
+          s += `${indent}  ${createJson(value[i], innerLinks(value, links, i), indent + '  ')}${i + 1 == value.length ? '' : ','}\n`;
+        }
+        s += `${indent}]`;
+        return s;
+      } else if (value === null) {
+        return `<span class="null">null</span>`;
+      } else {
+        const type = typeof value;
+        if (type === 'string') {
+          return `<span class="string">"${escapeHtml(value)}"</span>`;
+        } else if (type === 'boolean') {
+          return `<span class="boolean">${type ? 'true' : 'false'}</span>`;
+        } else if (type === 'number') {
+          return `<span class="number">${value}</span>`;
+        } else if (type === 'object') {
+          let s = `{\n`;
+          let k = Object.keys(value).filter(e => e != '_links');
+          for (let i = 0; i < k.length; ++i) {
+            if (links && k[i] in links && typeof links[k[i]] === 'string') {
+              s += `${indent}  <a href='${links[k[i]]}'><span class="key">${escapeHtml(k[i])}</span></a>: ${createJson(value[k[i]], innerLinks(value[k[i]], links, k[i]), indent + '  ')}${i + 1 == k.length ? '' : ','}\n`;
+            } else {
+              s += `${indent}  <span class="key">${escapeHtml(k[i])}</span>: ${createJson(value[k[i]], innerLinks(value[k[i]], links, k[i]), indent + '  ')}${i + 1 == k.length ? '' : ','}\n`;
+            }
+          }
+          s += `${indent}}`;
+          return s;
+        }
+      }
+    };
     const data = {};
   </script>
   <pre id="json-output"></pre>
@@ -44,7 +118,7 @@
     favico = data._favico;
     delete data._favico;
   }
-  document.getElementById("json-output").innerHTML = JSON.stringify(data, null, 2);
+  document.getElementById("json-output").innerHTML = createJson(data, '_links' in data ? data._links : null, '');
   if (favico) {
     document.querySelector("link[rel~='icon']").href = favico;
   }
