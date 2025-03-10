@@ -1,0 +1,13 @@
+alpha = { 'a'..'z' | 'A'..'Z' }
+digit = { '0'..'9' }
+
+identifier = { alpha ~ (alpha | digit)* }
+number = { digit+ }
+
+plus = { "+" }
+minus = { "-" }
+op = { plus | minus }
+
+term = _{ identifier | number | op }
+
+toplevel = _{ term ~ (" "+ ~ term)* }
