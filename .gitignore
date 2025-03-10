@@ -1,5 +1,7 @@
 Cargo.lock
 target/
 
+.vscode/
+
 # Using the `Dockerfile.template` in the root directory now.
 Dockerfile
