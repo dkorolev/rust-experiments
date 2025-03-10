@@ -36,3 +36,14 @@ fn traverse(token: Pair<'_, Rule>, indent: usize) {
 fn main() {
   Grammar::parse(Rule::toplevel, "a + b a2 - b2 + 42").unwrap().for_each(|e| traverse(e, 0));
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn test_parser() {
+    const GOLDEN: &str = include_str!("golden.txt");
+    assert_eq!(format!("{:?}", Grammar::parse(Rule::toplevel, "a + b a2 - b2 + 42").unwrap()), GOLDEN.trim());
+  }
+}
