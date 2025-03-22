@@ -36,11 +36,8 @@ async fn main() -> ExitCode {
   let args = Args::parse();
 
   match args.mode.as_str() {
-    "check" => try_check(&args).await.map_or(1, |_| 0),
-    "test" => try_test(&args).await.map_or(1, |_| 0),
-    _ => {
-      println!("This `--mode` value is not supported.");
-      1
-    }
-  }.into()
+    "check" => try_check(&args).await,
+    "test" => try_test(&args).await,
+    _ => Err(anyhow!("This `--mode` value is not supported."))
+  }.map_or_else(|err| { println!("Error: {}", err); 1 }, |_| 0).into()
 }
