@@ -1,21 +1,22 @@
 use axum::body::Body;
-use axum::{routing::get, serve, Router};
-use hyper::header::CONTENT_TYPE;
-use hyper::StatusCode;
-use std::sync::Arc;
-
-use serde::{Deserialize, Serialize};
-
-use tower::ServiceBuilder;
-
-use hyper::header::ACCEPT;
-use hyper::Request;
-use std::net::SocketAddr;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::{net::TcpListener, sync::mpsc};
-
 use axum::middleware::{from_fn, Next};
 use axum::response::{IntoResponse, Response};
+use axum::{routing::get, serve, Router};
+use hyper::header::ACCEPT;
+use hyper::header::CONTENT_TYPE;
+use hyper::Request;
+use hyper::StatusCode;
+use redb::{Database, ReadableTable, TableDefinition};
+use serde::{Deserialize, Serialize};
+use std::fs;
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+use tokio::signal::unix::{signal, SignalKind};
+use tokio::{net::TcpListener, sync::mpsc};
+use tower::ServiceBuilder;
+
+static GLOBALS: TableDefinition<u64, u64> = TableDefinition::new("globals");
 
 #[derive(Clone)]
 struct BrowserFriendlyJson {
@@ -50,6 +51,7 @@ static JSON_TEMPLATE_HTML_SPLIT_IDX: usize = find_split_position(&JSON_TEMPLATE_
 enum JSONResponse {
   Point { x: i32, y: i32 },
   Message { text: String },
+  Counters { counter_runs: u64, counter_requests: u64 },
 }
 
 fn create_response<S: Into<String>>(content_type: &str, body: S) -> Response<Body> {
@@ -82,7 +84,30 @@ async fn browser_json_renderer(request: Request<Body>, next: Next, tmpl: Arc<Jso
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+  fs::create_dir_all(&Path::new("./.db"))?;
+  let redb = Database::create("./.db/demo.redb")?;
+  run_main(&redb, inc_counter(&redb).await?).await;
+  Ok(())
+}
+
+async fn inc_counter(redb: &Database) -> Result<u64, Box<dyn std::error::Error>> {
+  let mut counter_runs: u64 = 0;
+  let txn = redb.begin_write()?;
+  {
+    let mut table = txn.open_table(GLOBALS)?;
+    if let Some(value) = table.get(&1)? {
+      counter_runs = value.value();
+    }
+    counter_runs += 1;
+    println!("Run counter in the DB: {}", counter_runs);
+    table.insert(&1, &counter_runs)?;
+  }
+  txn.commit()?;
+  Ok(counter_runs)
+}
+
+async fn run_main(_redb: &Database, counter_runs: u64) {
   // NOTE(dkorolev): Can this be done at compile time?
   let html_template = Arc::new(JsonHtmlTemplate(
     std::str::from_utf8(&JSON_TEMPLATE_HTML[0..JSON_TEMPLATE_HTML_SPLIT_IDX]).expect("NON-UTF8 TEMPLATE"),
@@ -90,6 +115,8 @@ async fn main() {
   ));
 
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
+  let counter_runs = Arc::new(counter_runs);
 
   let app = Router::new()
     .route("/healthz", get(|| async { "OK\n" }))
@@ -106,9 +133,13 @@ async fn main() {
     )
     .route(
       "/json",
-      get(|| async {
-        let response = JSONResponse::Point { x: 2, y: 3 };
-        BrowserFriendlyJson { data: serde_json::to_string(&response).unwrap() }
+      get({
+        let counter_runs = Box::new(*counter_runs);
+        let cnt_requests = Box::new(42); // NOT IMPLEMENTED YET
+        || async move {
+          let response = JSONResponse::Counters { counter_runs: *counter_runs, counter_requests: *cnt_requests };
+          BrowserFriendlyJson { data: serde_json::to_string(&response).unwrap() }
+        }
       }),
     )
     .layer(ServiceBuilder::new().layer(from_fn({
