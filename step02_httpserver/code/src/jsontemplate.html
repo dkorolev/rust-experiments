@@ -65,7 +65,7 @@
       // NOTE(dkorolev): Support both top-level `_links` and inner-level `._links`, see the example.
       if (value && value._links) {
         return value._links;
-      } else if (links !== undefined && i in links) {
+      } else if (typeof links === 'Object' && i in links) {
         return links[i];
       } else {
         return undefined;
