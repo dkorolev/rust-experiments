@@ -1,0 +1,8 @@
+[package]
+name = "redis_example"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.0", features = ["derive"] }
+redis = { version = "0.25", features = ["tokio-comp"] }
+tokio = { version = "1", features = ["full"] }
