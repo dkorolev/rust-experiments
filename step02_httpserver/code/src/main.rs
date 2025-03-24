@@ -89,3 +89,81 @@ async fn main() {
 
   println!("rust http server down");
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use axum::{
+    http::{self, Request, StatusCode},
+    Router,
+  };
+  use tower::util::ServiceExt;
+
+  #[tokio::test]
+  async fn test_getting_json() {
+    let app = Router::new().route("/json", get(json_or_html));
+
+    let response = app
+      .oneshot(
+        Request::builder()
+          .method(http::Method::GET)
+          .uri("/json")
+          .header(http::header::ACCEPT, mime::APPLICATION_JSON.as_ref())
+          .body(String::new())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+      .headers()
+      .get(http::header::CONTENT_TYPE)
+      .unwrap()
+      .to_str()
+      .unwrap()
+      .split(";")
+      .any(|x| x.trim() == "application/json"));
+  }
+
+  #[tokio::test]
+  async fn test_getting_html() {
+    let app = Router::new().route("/json", get(json_or_html));
+
+    let response = app
+      .oneshot(
+        Request::builder()
+          .method(http::Method::GET)
+          .uri("/json")
+          .header(http::header::ACCEPT, mime::TEXT_HTML.as_ref())
+          .body(String::new())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+      .headers()
+      .get(http::header::CONTENT_TYPE)
+      .unwrap()
+      .to_str()
+      .unwrap()
+      .split(";")
+      .any(|x| x.trim() == "text/html"));
+  }
+
+  #[test]
+  fn test_accept_header_contains_text_html() {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ACCEPT, "text/html".parse().unwrap());
+    assert!(accept_header_contains_text_html(&headers));
+
+    headers.insert(header::ACCEPT, "application/json, Text/Html; q=0.5".parse().unwrap());
+    assert!(accept_header_contains_text_html(&headers));
+
+    headers.clear();
+    headers.insert(header::ACCEPT, "application/xml".parse().unwrap());
+    assert!(!accept_header_contains_text_html(&headers));
+  }
+}
