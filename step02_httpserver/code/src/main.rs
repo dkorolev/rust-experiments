@@ -1,25 +1,19 @@
-use axum::body::Body;
-use axum::{routing::get, serve, Router};
-use hyper::header::CONTENT_TYPE;
-use hyper::StatusCode;
-
-use tower::ServiceBuilder;
-
-use hyper::header::ACCEPT;
-use hyper::Request;
-use std::net::SocketAddr;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::{net::TcpListener, sync::mpsc};
-
-use axum::middleware::{from_fn, Next};
-use axum::response::{IntoResponse, Response};
-
 use askama::Template;
-
-#[derive(Clone)]
-struct BrowserFriendlyJson {
-  data: String,
-}
+use axum::{
+  response::{Html, IntoResponse, Response},
+  routing::get,
+  serve, Router,
+};
+use hyper::{
+  header::{self, HeaderMap},
+  StatusCode,
+};
+use std::net::SocketAddr;
+use tokio::{
+  net::TcpListener,
+  signal::unix::{signal, SignalKind},
+  sync::mpsc,
+};
 
 #[derive(Template)]
 #[template(path = "jsontemplate.html", escape = "none")]
@@ -27,45 +21,34 @@ struct DataHtmlTemplate<'a> {
   raw_json_as_string: &'a str,
 }
 
-impl IntoResponse for BrowserFriendlyJson {
-  fn into_response(self) -> Response {
-    let mut response = StatusCode::NOT_IMPLEMENTED.into_response();
-    response.extensions_mut().insert(self);
-    response
-  }
-}
-
 const SAMPLE_JSON: &str = include_str!("sample.json");
 
-fn create_response<S: Into<String>>(content_type: &str, body: S) -> Response<Body> {
-  Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, content_type).body(Body::from(body.into())).unwrap()
+async fn json_or_html(headers: HeaderMap) -> impl IntoResponse {
+  let raw_json_as_string = SAMPLE_JSON;
+  if accept_header_contains_text_html(&headers) {
+    let template = DataHtmlTemplate { raw_json_as_string };
+    match template.render() {
+      Ok(html) => Html(html).into_response(),
+      Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+  } else {
+    Response::builder()
+      .status(StatusCode::OK)
+      .header("content-type", "application/json")
+      .body(raw_json_as_string.to_string())
+      .unwrap()
+      .into_response()
+  }
 }
 
-async fn browser_json_renderer(request: Request<Body>, next: Next) -> Response {
-  // TODO(dkorolev): Can this be more Rusty?
-  let mut accept_html = false;
-  request.headers().get(&ACCEPT).map(|value| {
-    let s = std::str::from_utf8(value.as_ref()).unwrap();
-    s.split(',').for_each(|value| {
-      if value == "text/html" || value == "html" {
-        accept_html = true;
-      }
-    })
-  });
-
-  // NOTE(dkorolev): I could not put the above logic to inside after `if let`, although, clearly it should be there.
-  let mut response = next.run(request).await;
-  if let Some(my_data) = response.extensions_mut().remove::<BrowserFriendlyJson>() {
-    if accept_html {
-      let template = DataHtmlTemplate { raw_json_as_string: &my_data.data };
-      if let Ok(html) = template.render() {
-        return create_response("text/html", html);
-      }
-    }
-    return create_response("application/json", my_data.data);
-  }
-
-  response
+fn accept_header_contains_text_html(headers: &HeaderMap) -> bool {
+  headers
+    .get_all(header::ACCEPT)
+    .iter()
+    .filter_map(|s| s.to_str().ok())
+    .flat_map(|s| s.split(','))
+    .map(|s| s.split(';').next().unwrap_or("").trim())
+    .any(|s| s.eq_ignore_ascii_case("text/html"))
 }
 
 #[tokio::main]
@@ -85,11 +68,7 @@ async fn main() {
         }
       }),
     )
-    .route("/json", get(|| async { BrowserFriendlyJson { data: SAMPLE_JSON.to_string() } }))
-    .layer(ServiceBuilder::new().layer(from_fn({
-      // TODO(dkorolev): Can I just move the `html_template` into `browser_json_renderer`?
-      |req, next| browser_json_renderer(req, next)
-    })));
+    .route("/json", get(json_or_html));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();
