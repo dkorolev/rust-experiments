@@ -2,7 +2,6 @@ use axum::body::Body;
 use axum::{routing::get, serve, Router};
 use hyper::header::CONTENT_TYPE;
 use hyper::StatusCode;
-use std::sync::Arc;
 
 use tower::ServiceBuilder;
 
@@ -15,14 +14,17 @@ use tokio::{net::TcpListener, sync::mpsc};
 use axum::middleware::{from_fn, Next};
 use axum::response::{IntoResponse, Response};
 
+use askama::Template;
+
 #[derive(Clone)]
 struct BrowserFriendlyJson {
   data: String,
 }
 
-struct JsonHtmlTemplate<'a> {
-  pre: &'a str,
-  post: &'a str,
+#[derive(Template)]
+#[template(path = "jsontemplate.html", escape = "none")]
+struct DataHtmlTemplate<'a> {
+  raw_json_as_string: &'a str,
 }
 
 impl IntoResponse for BrowserFriendlyJson {
@@ -35,24 +37,11 @@ impl IntoResponse for BrowserFriendlyJson {
 
 const SAMPLE_JSON: &str = include_str!("sample.json");
 
-const fn find_split_position(bytes: &[u8]) -> usize {
-  let mut i = 0;
-  while i < bytes.len() && (bytes[i] != b'{' || bytes[i + 1] != b'}') {
-    i += 1;
-  }
-  i
-  // TODO(dkorolev): Panic if did not find `{}` or if found more than one `{}`.
-  // NOTE(dkorolev): Why not create the split `str` slice at compile time, huh?
-}
-
-static JSON_TEMPLATE_HTML: &[u8] = include_bytes!("jsontemplate.html");
-static JSON_TEMPLATE_HTML_SPLIT_IDX: usize = find_split_position(&JSON_TEMPLATE_HTML);
-
 fn create_response<S: Into<String>>(content_type: &str, body: S) -> Response<Body> {
   Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, content_type).body(Body::from(body.into())).unwrap()
 }
 
-async fn browser_json_renderer(request: Request<Body>, next: Next, tmpl: Arc<JsonHtmlTemplate<'_>>) -> Response {
+async fn browser_json_renderer(request: Request<Body>, next: Next) -> Response {
   // TODO(dkorolev): Can this be more Rusty?
   let mut accept_html = false;
   request.headers().get(&ACCEPT).map(|value| {
@@ -68,10 +57,12 @@ async fn browser_json_renderer(request: Request<Body>, next: Next, tmpl: Arc<Jso
   let mut response = next.run(request).await;
   if let Some(my_data) = response.extensions_mut().remove::<BrowserFriendlyJson>() {
     if accept_html {
-      return create_response("text/html", format!("{}{}{}", tmpl.pre, my_data.data, tmpl.post));
-    } else {
-      return create_response("application/json", my_data.data);
+      let template = DataHtmlTemplate { raw_json_as_string: &my_data.data };
+      if let Ok(html) = template.render() {
+        return create_response("text/html", html);
+      }
     }
+    return create_response("application/json", my_data.data);
   }
 
   response
@@ -79,12 +70,6 @@ async fn browser_json_renderer(request: Request<Body>, next: Next, tmpl: Arc<Jso
 
 #[tokio::main]
 async fn main() {
-  // NOTE(dkorolev): Can this be done at compile time?
-  let html_template = Arc::new(JsonHtmlTemplate {
-    pre: std::str::from_utf8(&JSON_TEMPLATE_HTML[0..JSON_TEMPLATE_HTML_SPLIT_IDX]).expect("NON-UTF8 TEMPLATE"),
-    post: std::str::from_utf8(&JSON_TEMPLATE_HTML[(JSON_TEMPLATE_HTML_SPLIT_IDX + 2)..]).expect("NON-UTF8 TEMPLATE"),
-  });
-
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
   let app = Router::new()
@@ -103,8 +88,7 @@ async fn main() {
     .route("/json", get(|| async { BrowserFriendlyJson { data: SAMPLE_JSON.to_string() } }))
     .layer(ServiceBuilder::new().layer(from_fn({
       // TODO(dkorolev): Can I just move the `html_template` into `browser_json_renderer`?
-      let html_template = Arc::clone(&html_template);
-      move |req, next| browser_json_renderer(req, next, Arc::clone(&html_template))
+      |req, next| browser_json_renderer(req, next)
     })));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
