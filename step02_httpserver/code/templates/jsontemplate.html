@@ -65,7 +65,7 @@
       // NOTE(dkorolev): Support both top-level `_links` and inner-level `._links`, see the example.
       if (value && value._links) {
         return value._links;
-      } else if (typeof links === 'Object' && i in links) {
+      } else if (links && i in links) {
         return links[i];
       } else {
         return undefined;
@@ -105,7 +105,7 @@
         }
       }
     };
-    const data = {};
+    const data = {{ raw_json_as_string }};
   </script>
   <pre id="json-output"></pre>
   <script>
