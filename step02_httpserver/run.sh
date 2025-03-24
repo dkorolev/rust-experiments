@@ -19,7 +19,11 @@ done
 
 curl -s localhost:3000
 
+echo "RAW JSON"
 curl -s localhost:3000/json
+
+echo "NICE HTML"
+curl -s -H "Accept: text/html" localhost:3000/json
 
 curl -s localhost:3000/quit
 

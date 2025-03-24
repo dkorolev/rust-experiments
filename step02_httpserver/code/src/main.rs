@@ -1,90 +1,58 @@
-use axum::body::Body;
-use axum::{routing::get, serve, Router};
-use hyper::header::CONTENT_TYPE;
-use hyper::StatusCode;
-use std::sync::Arc;
-
-use tower::ServiceBuilder;
-
-use hyper::header::ACCEPT;
-use hyper::Request;
+use askama::Template;
+use axum::{
+  response::{Html, IntoResponse, Response},
+  routing::get,
+  serve, Router,
+};
+use hyper::{
+  header::{self, HeaderMap},
+  StatusCode,
+};
 use std::net::SocketAddr;
-use tokio::signal::unix::{signal, SignalKind};
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+  net::TcpListener,
+  signal::unix::{signal, SignalKind},
+  sync::mpsc,
+};
 
-use axum::middleware::{from_fn, Next};
-use axum::response::{IntoResponse, Response};
-
-#[derive(Clone)]
-struct BrowserFriendlyJson {
-  data: String,
-}
-
-struct JsonHtmlTemplate<'a> {
-  pre: &'a str,
-  post: &'a str,
-}
-
-impl IntoResponse for BrowserFriendlyJson {
-  fn into_response(self) -> Response {
-    let mut response = StatusCode::NOT_IMPLEMENTED.into_response();
-    response.extensions_mut().insert(self);
-    response
-  }
+#[derive(Template)]
+#[template(path = "jsontemplate.html", escape = "none")]
+struct DataHtmlTemplate<'a> {
+  raw_json_as_string: &'a str,
 }
 
 const SAMPLE_JSON: &str = include_str!("sample.json");
 
-const fn find_split_position(bytes: &[u8]) -> usize {
-  let mut i = 0;
-  while i < bytes.len() && (bytes[i] != b'{' || bytes[i + 1] != b'}') {
-    i += 1;
-  }
-  i
-  // TODO(dkorolev): Panic if did not find `{}` or if found more than one `{}`.
-  // NOTE(dkorolev): Why not create the split `str` slice at compile time, huh?
-}
-
-static JSON_TEMPLATE_HTML: &[u8] = include_bytes!("jsontemplate.html");
-static JSON_TEMPLATE_HTML_SPLIT_IDX: usize = find_split_position(&JSON_TEMPLATE_HTML);
-
-fn create_response<S: Into<String>>(content_type: &str, body: S) -> Response<Body> {
-  Response::builder().status(StatusCode::OK).header(CONTENT_TYPE, content_type).body(Body::from(body.into())).unwrap()
-}
-
-async fn browser_json_renderer(request: Request<Body>, next: Next, tmpl: Arc<JsonHtmlTemplate<'_>>) -> Response {
-  // TODO(dkorolev): Can this be more Rusty?
-  let mut accept_html = false;
-  request.headers().get(&ACCEPT).map(|value| {
-    let s = std::str::from_utf8(value.as_ref()).unwrap();
-    s.split(',').for_each(|value| {
-      if value == "text/html" || value == "html" {
-        accept_html = true;
-      }
-    })
-  });
-
-  // NOTE(dkorolev): I could not put the above logic to inside after `if let`, although, clearly it should be there.
-  let mut response = next.run(request).await;
-  if let Some(my_data) = response.extensions_mut().remove::<BrowserFriendlyJson>() {
-    if accept_html {
-      return create_response("text/html", format!("{}{}{}", tmpl.pre, my_data.data, tmpl.post));
-    } else {
-      return create_response("application/json", my_data.data);
+async fn json_or_html(headers: HeaderMap) -> impl IntoResponse {
+  let raw_json_as_string = SAMPLE_JSON;
+  if accept_header_contains_text_html(&headers) {
+    let template = DataHtmlTemplate { raw_json_as_string };
+    match template.render() {
+      Ok(html) => Html(html).into_response(),
+      Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
+  } else {
+    Response::builder()
+      .status(StatusCode::OK)
+      .header("content-type", "application/json")
+      .body(raw_json_as_string.to_string())
+      .unwrap()
+      .into_response()
   }
+}
 
-  response
+fn accept_header_contains_text_html(headers: &HeaderMap) -> bool {
+  headers
+    .get_all(header::ACCEPT)
+    .iter()
+    .filter_map(|s| s.to_str().ok())
+    .flat_map(|s| s.split(','))
+    .map(|s| s.split(';').next().unwrap_or("").trim())
+    .any(|s| s.eq_ignore_ascii_case("text/html"))
 }
 
 #[tokio::main]
 async fn main() {
-  // NOTE(dkorolev): Can this be done at compile time?
-  let html_template = Arc::new(JsonHtmlTemplate {
-    pre: std::str::from_utf8(&JSON_TEMPLATE_HTML[0..JSON_TEMPLATE_HTML_SPLIT_IDX]).expect("NON-UTF8 TEMPLATE"),
-    post: std::str::from_utf8(&JSON_TEMPLATE_HTML[(JSON_TEMPLATE_HTML_SPLIT_IDX + 2)..]).expect("NON-UTF8 TEMPLATE"),
-  });
-
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
   let app = Router::new()
@@ -100,12 +68,7 @@ async fn main() {
         }
       }),
     )
-    .route("/json", get(|| async { BrowserFriendlyJson { data: SAMPLE_JSON.to_string() } }))
-    .layer(ServiceBuilder::new().layer(from_fn({
-      // TODO(dkorolev): Can I just move the `html_template` into `browser_json_renderer`?
-      let html_template = Arc::clone(&html_template);
-      move |req, next| browser_json_renderer(req, next, Arc::clone(&html_template))
-    })));
+    .route("/json", get(json_or_html));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();
@@ -125,4 +88,82 @@ async fn main() {
   }
 
   println!("rust http server down");
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use axum::{
+    http::{self, Request, StatusCode},
+    Router,
+  };
+  use tower::util::ServiceExt;
+
+  #[tokio::test]
+  async fn test_getting_json() {
+    let app = Router::new().route("/json", get(json_or_html));
+
+    let response = app
+      .oneshot(
+        Request::builder()
+          .method(http::Method::GET)
+          .uri("/json")
+          .header(http::header::ACCEPT, mime::APPLICATION_JSON.as_ref())
+          .body(String::new())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+      .headers()
+      .get(http::header::CONTENT_TYPE)
+      .unwrap()
+      .to_str()
+      .unwrap()
+      .split(";")
+      .any(|x| x.trim() == "application/json"));
+  }
+
+  #[tokio::test]
+  async fn test_getting_html() {
+    let app = Router::new().route("/json", get(json_or_html));
+
+    let response = app
+      .oneshot(
+        Request::builder()
+          .method(http::Method::GET)
+          .uri("/json")
+          .header(http::header::ACCEPT, mime::TEXT_HTML.as_ref())
+          .body(String::new())
+          .unwrap(),
+      )
+      .await
+      .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response
+      .headers()
+      .get(http::header::CONTENT_TYPE)
+      .unwrap()
+      .to_str()
+      .unwrap()
+      .split(";")
+      .any(|x| x.trim() == "text/html"));
+  }
+
+  #[test]
+  fn test_accept_header_contains_text_html() {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::ACCEPT, "text/html".parse().unwrap());
+    assert!(accept_header_contains_text_html(&headers));
+
+    headers.insert(header::ACCEPT, "application/json, Text/Html; q=0.5".parse().unwrap());
+    assert!(accept_header_contains_text_html(&headers));
+
+    headers.clear();
+    headers.insert(header::ACCEPT, "application/xml".parse().unwrap());
+    assert!(!accept_header_contains_text_html(&headers));
+  }
 }
