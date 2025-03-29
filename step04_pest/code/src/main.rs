@@ -20,98 +20,47 @@ fn main() {
 mod tests {
   use super::*;
 
-  fn rule(s: &'static str) -> Rule {
-    Grammar::parse(Rule::term, s).unwrap().next().unwrap().as_rule()
+  fn rule(s: &'static str) -> Option<Rule> {
+    match Grammar::parse(Rule::term, s) {
+      Ok(mut r) => Some(r.next().unwrap().as_rule()),
+      Err(_) => None,
+    }
   }
 
   #[test]
-  fn test_good() {
-    assert_eq!(rule("test"), Rule::lower_snake);
-    assert_eq!(rule("foo_bar"), Rule::lower_snake);
-    assert_eq!(rule("i"), Rule::lower_snake);
-    assert_eq!(rule("i1"), Rule::lower_snake);
-    assert_eq!(rule("i_1"), Rule::lower_snake);
+  fn test() {
+    assert_eq!(rule("test"), Some(Rule::lower_snake));
+    assert_eq!(rule("foo_bar"), Some(Rule::lower_snake));
+    assert_eq!(rule("i"), Some(Rule::lower_snake));
+    assert_eq!(rule("i1"), Some(Rule::lower_snake));
+    assert_eq!(rule("i_1"), Some(Rule::lower_snake));
 
-    assert_eq!(rule("TEST"), Rule::upper_snake);
-    assert_eq!(rule("FOO_BAR"), Rule::upper_snake);
-    assert_eq!(rule("FOO_BAR_BAZ"), Rule::upper_snake);
-    assert_eq!(rule("I"), Rule::upper_snake);
-    assert_eq!(rule("I1"), Rule::upper_snake);
-    assert_eq!(rule("I_1"), Rule::upper_snake);
+    assert_eq!(rule("TEST"), Some(Rule::upper_snake));
+    assert_eq!(rule("FOO_BAR"), Some(Rule::upper_snake));
+    assert_eq!(rule("FOO_BAR_BAZ"), Some(Rule::upper_snake));
+    assert_eq!(rule("I"), Some(Rule::upper_snake));
+    assert_eq!(rule("I1"), Some(Rule::upper_snake));
+    assert_eq!(rule("I_1"), Some(Rule::upper_snake));
 
-    assert_eq!(rule("Test"), Rule::camel_case);
-    assert_eq!(rule("FooBar"), Rule::camel_case);
-    assert_eq!(rule("FooBarBaz"), Rule::camel_case);
-    assert_eq!(rule("FooBar1"), Rule::camel_case);
+    assert_eq!(rule("Test"), Some(Rule::camel_case));
+    assert_eq!(rule("FooBar"), Some(Rule::camel_case));
+    assert_eq!(rule("FooBarBaz"), Some(Rule::camel_case));
+    assert_eq!(rule("FooBar1"), Some(Rule::camel_case));
 
-    assert_eq!(rule("fooBar"), Rule::camel_back);
-    assert_eq!(rule("fooBarBaz"), Rule::camel_back);
-    assert_eq!(rule("fooBar1"), Rule::camel_back);
-  }
+    assert_eq!(rule("fooBar"), Some(Rule::camel_back));
+    assert_eq!(rule("fooBarBaz"), Some(Rule::camel_back));
+    assert_eq!(rule("fooBar1"), Some(Rule::camel_back));
 
-  #[test]
-  #[should_panic]
-  fn test_panic_01() {
-    rule("FooBar_1");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_02() {
-    rule("mixedCASE");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_03() {
-    rule("FAILStoo");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_04() {
-    rule("1foo");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_05() {
-    rule("1Foo");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_06() {
-    rule("fooBar_1");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_07() {
-    rule("fooBarBAZ");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_08() {
-    rule("fooBar_Baz");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_09() {
-    rule("_foo");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_10() {
-    rule("_FOO");
-  }
-
-  #[test]
-  #[should_panic]
-  fn test_panic_11() {
-    rule("_Foo");
+    assert_eq!(rule("FooBar_1"), None);
+    assert_eq!(rule("mixedCASE"), None);
+    assert_eq!(rule("FAILStoo"), None);
+    assert_eq!(rule("1foo"), None);
+    assert_eq!(rule("1Foo"), None);
+    assert_eq!(rule("fooBar_1"), None);
+    assert_eq!(rule("fooBarBAZ"), None);
+    assert_eq!(rule("fooBar_Baz"), None);
+    assert_eq!(rule("_foo"), None);
+    assert_eq!(rule("_FOO"), None);
+    assert_eq!(rule("_Foo"), None);
   }
 }
