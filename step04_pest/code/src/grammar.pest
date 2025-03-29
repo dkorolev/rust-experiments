@@ -1,13 +1,20 @@
-alpha = { 'a'..'z' | 'A'..'Z' }
-digit = { '0'..'9' }
+term = _{ SOI ~ single_term ~ EOI }
 
-identifier = { alpha ~ (alpha | digit)* }
-number = { digit+ }
+single_term = _{
+    camel_case
+  | camel_back
+  | lower_snake
+  | upper_snake
+}
 
-plus = { "+" }
-minus = { "-" }
-op = { plus | minus }
+// Just for the demo/test.
+terms = _{ SOI ~ single_term ~ ("," ~ single_term)* ~ EOI }
 
-term = _{ identifier | number | op }
+camel_case = @{ (up ~ dg* ~ lo+ ~ (lo | dg)*)+ }
+camel_back = @{ lo ~ (lo | dg)* ~ camel_case }
+lower_snake = @{ lo ~ (lo | dg | "_")* }
+upper_snake = @{ up ~ (up | dg | "_")* }
 
-toplevel = _{ term ~ (" "+ ~ term)* }
+lo = { ASCII_ALPHA_LOWER }
+up = { ASCII_ALPHA_UPPER }
+dg = { ASCII_DIGIT }
