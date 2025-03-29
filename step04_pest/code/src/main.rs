@@ -62,5 +62,12 @@ mod tests {
     assert_eq!(rule("_foo"), None);
     assert_eq!(rule("_FOO"), None);
     assert_eq!(rule("_Foo"), None);
+
+    assert_eq!(rule("should_"), None);
+    assert_eq!(rule("should_not_"), None);
+    assert_eq!(rule("Not_"), None);
+    assert_eq!(rule("Not_Parse"), None);
+    assert_eq!(rule("BECAUSE_"), None);
+    assert_eq!(rule("IT_IS_WRONG_"), None);
   }
 }
