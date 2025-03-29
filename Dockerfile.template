@@ -16,6 +16,10 @@ RUN cargo build --release --target "$(uname -m)-unknown-linux-musl"
 # Prepare the static binary.
 RUN cp ./target/"$(uname -m)-unknown-linux-musl"/release/"$(cat Cargo.toml | grep '^name\s*=' | cut -f2 -d'"')" /binary
 
+# Run the tests. Should be fine in case of no tests.
+RUN cargo test -- --test-threads=1
+RUN cargo test --release -- --test-threads=1
+
 # The resulting container with the static binary only.
 FROM scratch
 COPY --from=build /binary /binary
