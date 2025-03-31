@@ -51,7 +51,7 @@ mod tests {
   #[tokio::test]
   async fn test_getting_json() {
     let app =
-      Router::new().route("/json", get(|headers| async move { json_or_html(headers, "{\"test\": \"data\"}").await }));
+      Router::new().route("/json", get(|headers| async move { json_or_html(headers, r#"{"test":"data"}"#).await }));
 
     let response = app
       .oneshot(
