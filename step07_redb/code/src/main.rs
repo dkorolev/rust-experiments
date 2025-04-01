@@ -2,6 +2,7 @@ use axum::{routing::get, serve, Router};
 use hyper::header::HeaderMap;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::error::Error;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -25,33 +26,34 @@ enum JSONResponse {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
   fs::create_dir_all(&Path::new("./.db"))?;
-  let redb = Database::create("./.db/demo.redb")?;
-  run_main(&redb, inc_counter(&redb).await?).await;
+  let redb = Arc::new(Database::create("./.db/demo.redb")?);
+  let initial_counter_runs_value = inc_counter(&redb, 1).await?;
+  run_main(redb, initial_counter_runs_value).await;
   Ok(())
 }
 
-async fn inc_counter(redb: &Database) -> Result<u64, Box<dyn std::error::Error>> {
+async fn inc_counter(redb: &Database, idx: u64) -> Result<u64, Box<dyn Error>> {
   let mut counter_runs: u64 = 0;
   let txn = redb.begin_write()?;
   {
     let mut table = txn.open_table(GLOBALS)?;
-    if let Some(value) = table.get(&1)? {
+    if let Some(value) = table.get(&idx)? {
       counter_runs = value.value();
     }
     counter_runs += 1;
-    println!("Run counter in the DB: {}", counter_runs);
-    table.insert(&1, &counter_runs)?;
+    println!("Run counter in the DB at index {idx}: {counter_runs}");
+    table.insert(&idx, &counter_runs)?;
   }
   txn.commit()?;
   Ok(counter_runs)
 }
 
-async fn run_main(_redb: &Database, counter_runs: u64) {
+async fn run_main(redb: Arc<Database>, initial_counter_runs_value: u64) {
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
-  let counter_runs = Arc::new(counter_runs);
+  let counter_runs = Arc::new(initial_counter_runs_value);
 
   let app = Router::new()
     .route("/healthz", get(|| async { "OK\n" }))
@@ -70,7 +72,7 @@ async fn run_main(_redb: &Database, counter_runs: u64) {
       "/json",
       get(|headers: HeaderMap| async move {
         let counter_runs = *counter_runs;
-        let cnt_requests = 42; // NOT IMPLEMENTED YET
+        let cnt_requests = inc_counter(&redb, 2).await.unwrap_or(0);
         let response = JSONResponse::Counters { counter_runs, counter_requests: cnt_requests };
         let json_string = serde_json::to_string(&response).unwrap();
         http::json_or_html(headers, &json_string).await

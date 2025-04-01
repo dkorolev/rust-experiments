@@ -37,6 +37,10 @@ for i in $(seq 1 $N) ; do
 
   curl -s localhost:3000/json
   echo
+  curl -s localhost:3000/json
+  echo
+  curl -s localhost:3000/json
+  echo
 
   curl -s localhost:3000/quit
   wait $PID
