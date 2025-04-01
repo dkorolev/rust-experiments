@@ -9,4 +9,6 @@ Dockerfile
 
 # To make sure all `lib` directories are effectively symlinks to `$REPO_ROOT/lib`.
 # Unless they are explicit copies, since otherwise Docker-based builds would not succeed.
-step*/code/lib
+step*/code/src/lib
+# For `askama`, which is hard-wired to the "top-level" `templates/` dir.
+step*/code/templates

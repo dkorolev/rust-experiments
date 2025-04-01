@@ -8,9 +8,12 @@ fn is_dir_or_symlink_to_dir(path: &Path) -> bool {
     Err(_) => false,
   }
 }
+
 fn main() {
-  let link = Path::new("lib");
-  if !is_dir_or_symlink_to_dir(link) {
-    symlink("../../lib", Path::new("lib")).expect("Failed to create symlink");
+  for (link, dir) in [("src/lib", "../../../lib"), ("templates", "../../lib/templates")] {
+    let link = Path::new(link);
+    if !is_dir_or_symlink_to_dir(link) {
+      symlink(dir, link).expect("Failed to create symlink");
+    }
   }
 }

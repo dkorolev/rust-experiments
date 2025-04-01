@@ -9,8 +9,10 @@ use tokio::{
 
 const SAMPLE_JSON: &str = include_str!("sample.json");
 
-#[path = "../lib/http.rs"]
-mod http;
+mod lib {
+  pub mod http;
+}
+use crate::lib::http;
 
 async fn json_handler(headers: HeaderMap) -> impl IntoResponse {
   http::json_or_html(headers, SAMPLE_JSON).await

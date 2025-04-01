@@ -6,7 +6,7 @@ use hyper::{
 };
 
 #[derive(Template)]
-#[template(path = "jsontemplate.html", escape = "none")]
+#[template(path = "json.html", escape = "none")]
 pub struct DataHtmlTemplate<'a> {
   pub raw_json_as_string: &'a str,
 }
