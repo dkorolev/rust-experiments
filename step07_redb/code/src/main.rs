@@ -72,8 +72,8 @@ async fn run_main(redb: Arc<Database>, initial_counter_runs_value: u64) {
       "/json",
       get(|headers: HeaderMap| async move {
         let counter_runs = *counter_runs;
-        let cnt_requests = inc_counter(&redb, 2).await.unwrap_or(0);
-        let response = JSONResponse::Counters { counter_runs, counter_requests: cnt_requests };
+        let counter_requests = inc_counter(&redb, 2).await.unwrap_or(0);
+        let response = JSONResponse::Counters { counter_runs, counter_requests };
         let json_string = serde_json::to_string(&response).unwrap();
         http::json_or_html(headers, &json_string).await
       }),
