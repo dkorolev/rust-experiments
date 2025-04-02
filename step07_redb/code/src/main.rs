@@ -50,10 +50,8 @@ async fn inc_counter(redb: &Database, idx: u64) -> Result<u64, Box<dyn Error>> {
   Ok(counter_runs)
 }
 
-async fn run_main(redb: Arc<Database>, initial_counter_runs_value: u64) {
+async fn run_main(redb: Arc<Database>, counter_runs: u64) {
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-
-  let counter_runs = Arc::new(initial_counter_runs_value);
 
   let app = Router::new()
     .route("/healthz", get(|| async { "OK\n" }))
@@ -70,12 +68,14 @@ async fn run_main(redb: Arc<Database>, initial_counter_runs_value: u64) {
     )
     .route(
       "/json",
-      get(|headers: HeaderMap| async move {
-        let counter_runs = *counter_runs;
-        let counter_requests = inc_counter(&redb, 2).await.unwrap_or(0);
-        let response = JSONResponse::Counters { counter_runs, counter_requests };
-        let json_string = serde_json::to_string(&response).unwrap();
-        http::json_or_html(headers, &json_string).await
+      get(move |headers: HeaderMap| {
+        let counter_runs = counter_runs;
+        async move {
+          let counter_requests = inc_counter(&redb, 2).await.unwrap_or(0);
+          let response = JSONResponse::Counters { counter_runs, counter_requests };
+          let json_string = serde_json::to_string(&response).unwrap();
+          http::json_or_html(headers, &json_string).await
+        }
       }),
     );
 
