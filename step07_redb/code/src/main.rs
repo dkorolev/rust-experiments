@@ -1,11 +1,8 @@
 use axum::{extract::State, routing::get, serve, Router};
 use hyper::header::HeaderMap;
-use redb::Database;
+use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use std::error::Error;
-use std::fs;
-use std::net::SocketAddr;
-use std::path::Path;
+use std::{error::Error, fs, net::SocketAddr, path::Path};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::{net::TcpListener, sync::mpsc};
 
@@ -13,7 +10,64 @@ mod db;
 mod lib {
   pub mod http;
 }
-use crate::{db::AsyncRedb, lib::http};
+use crate::{
+  db::{AsyncRedb, DbRequestHandler, DbResult},
+  lib::http,
+};
+
+static GLOBALS: TableDefinition<u64, u64> = TableDefinition::new("globals");
+static STRINGS: TableDefinition<u64, &str> = TableDefinition::new("strings");
+
+struct IncCounterRequest {
+  idx: u64,
+}
+
+impl DbRequestHandler for IncCounterRequest {
+  type Response = u64;
+  fn handle(&self, db: &Database) -> DbResult<Self::Response> {
+    let write_txn = db.begin_write()?;
+    let mut table = write_txn.open_table(GLOBALS)?;
+    let current = table.get(self.idx)?.map(|v| v.value()).unwrap_or(0);
+    let new_value = current + 1;
+    table.insert(self.idx, new_value)?;
+    drop(table);
+    write_txn.commit()?;
+    Ok(new_value)
+  }
+}
+
+struct IncStringRequest {
+  idx: u64,
+}
+
+impl DbRequestHandler for IncStringRequest {
+  type Response = String;
+  fn handle(&self, db: &Database) -> DbResult<Self::Response> {
+    let write_txn = db.begin_write()?;
+    let mut table = write_txn.open_table(STRINGS)?;
+    let current = table.get(self.idx)?.map(|v| v.value().to_string()).unwrap_or_default();
+    let new_value = format!("{}{}", current, ".");
+    table.insert(self.idx, new_value.as_str())?;
+    drop(table);
+    write_txn.commit()?;
+    Ok(new_value)
+  }
+}
+
+trait AsyncRedbExt {
+  async fn inc_counter(&self, idx: u64) -> DbResult<u64>;
+  async fn inc_string(&self, idx: u64) -> DbResult<String>;
+}
+
+impl AsyncRedbExt for AsyncRedb {
+  async fn inc_counter(&self, idx: u64) -> DbResult<u64> {
+    self.send_request(IncCounterRequest { idx }).await
+  }
+
+  async fn inc_string(&self, idx: u64) -> DbResult<String> {
+    self.send_request(IncStringRequest { idx }).await
+  }
+}
 
 #[derive(Clone)]
 struct AppState {
