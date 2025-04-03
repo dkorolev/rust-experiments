@@ -1,25 +1,23 @@
 use axum::{extract::State, routing::get, serve, Router};
 use hyper::header::HeaderMap;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::Database;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::Arc;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::{net::TcpListener, sync::mpsc};
 
+mod db;
 mod lib {
   pub mod http;
 }
-use crate::lib::http;
-
-static GLOBALS: TableDefinition<u64, u64> = TableDefinition::new("globals");
+use crate::{db::AsyncRedb, lib::http};
 
 #[derive(Clone)]
 struct AppState {
-  redb: Arc<Database>,
+  redb: AsyncRedb,
   counter_runs: u64,
   shutdown_tx: mpsc::Sender<()>,
 }
@@ -46,40 +44,21 @@ async fn quit_handler(State(state): State<AppState>) -> &'static str {
 }
 
 async fn json_handler(State(state): State<AppState>, headers: HeaderMap) -> impl axum::response::IntoResponse {
-  let counter_requests = inc_counter(&state.redb, 2).await.unwrap_or(0);
+  let counter_requests = state.redb.inc_counter(2).await.unwrap_or(0);
   let response = JSONResponse::Counters { counter_runs: state.counter_runs, counter_requests };
   let json_string = serde_json::to_string(&response).unwrap();
   http::json_or_html(headers, &json_string).await
 }
 
-async fn inc_counter(redb: &Database, idx: u64) -> Result<u64, Box<dyn Error>> {
-  let mut counter_runs: u64 = 0;
-  let txn = redb.begin_write()?;
-  {
-    let mut table = txn.open_table(GLOBALS)?;
-    if let Some(value) = table.get(&idx)? {
-      counter_runs = value.value();
-    }
-    counter_runs += 1;
-    println!("Run counter in the DB at index {idx}: {counter_runs}");
-    table.insert(&idx, &counter_runs)?;
-  }
-  txn.commit()?;
-  Ok(counter_runs)
-}
-
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
   fs::create_dir_all(&Path::new("./.db"))?;
-  let redb = Arc::new(Database::create("./.db/demo.redb")?);
-  let initial_counter_runs_value = inc_counter(&redb, 1).await?;
+  let db = Database::create("./.db/demo.redb")?;
+  let redb = AsyncRedb::new(db);
+  let initial_counter_runs_value = redb.inc_counter(1).await?;
 
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-  let state = AppState { 
-    redb: redb.clone(), 
-    counter_runs: initial_counter_runs_value,
-    shutdown_tx: shutdown_tx.clone(),
-  };
+  let state = AppState { redb, counter_runs: initial_counter_runs_value, shutdown_tx: shutdown_tx.clone() };
 
   let app = Router::new()
     .route("/healthz", get(health_handler))
