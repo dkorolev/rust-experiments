@@ -15,21 +15,29 @@ use crate::{
   lib::http,
 };
 
-static GLOBALS: TableDefinition<u64, u64> = TableDefinition::new("globals");
+#[repr(transparent)]
+struct CounterType(bool);
+
+impl CounterType {
+  const LAUNCH: Self = Self(true);
+  const ENDPOINT: Self = Self(false);
+}
+
+static COUNTERS: TableDefinition<bool, u64> = TableDefinition::new("counters");
 static STRINGS: TableDefinition<u64, &str> = TableDefinition::new("strings");
 
 struct IncCounterRequest {
-  idx: u64,
+  counter_type: CounterType,
 }
 
 impl DbRequestHandler for IncCounterRequest {
   type Response = u64;
   fn handle(&self, db: &Database) -> DbResult<Self::Response> {
     let write_txn = db.begin_write()?;
-    let mut table = write_txn.open_table(GLOBALS)?;
-    let current = table.get(self.idx)?.map(|v| v.value()).unwrap_or(0);
+    let mut table = write_txn.open_table(COUNTERS)?;
+    let current = table.get(&self.counter_type.0)?.map(|v| v.value()).unwrap_or(0);
     let new_value = current + 1;
-    table.insert(self.idx, new_value)?;
+    table.insert(&self.counter_type.0, new_value)?;
     drop(table);
     write_txn.commit()?;
     Ok(new_value)
@@ -55,13 +63,13 @@ impl DbRequestHandler for IncStringRequest {
 }
 
 trait AsyncRedbExt {
-  async fn inc_counter(&self, idx: u64) -> DbResult<u64>;
+  async fn inc_counter(&self, counter_type: CounterType) -> DbResult<u64>;
   async fn inc_string(&self, idx: u64) -> DbResult<String>;
 }
 
 impl AsyncRedbExt for AsyncRedb {
-  async fn inc_counter(&self, idx: u64) -> DbResult<u64> {
-    self.send_request(IncCounterRequest { idx }).await
+  async fn inc_counter(&self, counter_type: CounterType) -> DbResult<u64> {
+    self.send_request(IncCounterRequest { counter_type }).await
   }
 
   async fn inc_string(&self, idx: u64) -> DbResult<String> {
@@ -99,7 +107,7 @@ async fn quit_handler(State(state): State<AppState>) -> &'static str {
 }
 
 async fn json_handler(State(state): State<AppState>, headers: HeaderMap) -> impl axum::response::IntoResponse {
-  let counter_requests = state.redb.inc_counter(2).await.unwrap_or(0);
+  let counter_requests = state.redb.inc_counter(CounterType::ENDPOINT).await.unwrap_or(0);
   let response = JSONResponse::Counters { counter_runs: state.counter_runs, counter_requests };
   let json_string = serde_json::to_string(&response).unwrap();
   http::json_or_html(headers, &json_string).await
@@ -117,7 +125,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
   fs::create_dir_all(&Path::new("./.db"))?;
   let db = Database::create("./.db/demo.redb")?;
   let redb = AsyncRedb::new(db);
-  let initial_counter_runs_value = redb.inc_counter(1).await?;
+  let initial_counter_runs_value = redb.inc_counter(CounterType::LAUNCH).await?;
 
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
   let state = AppState { redb, counter_runs: initial_counter_runs_value, shutdown_tx: shutdown_tx.clone() };
