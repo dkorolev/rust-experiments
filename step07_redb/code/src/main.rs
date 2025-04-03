@@ -1,4 +1,4 @@
-use axum::{routing::get, serve, Router};
+use axum::{extract::State, routing::get, serve, Router};
 use hyper::header::HeaderMap;
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,13 @@ use crate::lib::http;
 
 static GLOBALS: TableDefinition<u64, u64> = TableDefinition::new("globals");
 
+#[derive(Clone)]
+struct AppState {
+  redb: Arc<Database>,
+  counter_runs: u64,
+  shutdown_tx: mpsc::Sender<()>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 enum JSONResponse {
@@ -25,13 +32,24 @@ enum JSONResponse {
   Counters { counter_runs: u64, counter_requests: u64 },
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-  fs::create_dir_all(&Path::new("./.db"))?;
-  let redb = Arc::new(Database::create("./.db/demo.redb")?);
-  let initial_counter_runs_value = inc_counter(&redb, 1).await?;
-  run_main(redb, initial_counter_runs_value).await;
-  Ok(())
+async fn health_handler() -> &'static str {
+  "OK\n"
+}
+
+async fn hello_handler() -> &'static str {
+  "hello this is a rust http server\n"
+}
+
+async fn quit_handler(State(state): State<AppState>) -> &'static str {
+  let _ = state.shutdown_tx.send(()).await;
+  "yes i am shutting down\n"
+}
+
+async fn json_handler(State(state): State<AppState>, headers: HeaderMap) -> impl axum::response::IntoResponse {
+  let counter_requests = inc_counter(&state.redb, 2).await.unwrap_or(0);
+  let response = JSONResponse::Counters { counter_runs: state.counter_runs, counter_requests };
+  let json_string = serde_json::to_string(&response).unwrap();
+  http::json_or_html(headers, &json_string).await
 }
 
 async fn inc_counter(redb: &Database, idx: u64) -> Result<u64, Box<dyn Error>> {
@@ -50,34 +68,25 @@ async fn inc_counter(redb: &Database, idx: u64) -> Result<u64, Box<dyn Error>> {
   Ok(counter_runs)
 }
 
-async fn run_main(redb: Arc<Database>, counter_runs: u64) {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+  fs::create_dir_all(&Path::new("./.db"))?;
+  let redb = Arc::new(Database::create("./.db/demo.redb")?);
+  let initial_counter_runs_value = inc_counter(&redb, 1).await?;
+
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+  let state = AppState { 
+    redb: redb.clone(), 
+    counter_runs: initial_counter_runs_value,
+    shutdown_tx: shutdown_tx.clone(),
+  };
 
   let app = Router::new()
-    .route("/healthz", get(|| async { "OK\n" }))
-    .route("/", get(|| async { "hello this is a rust http server\n" }))
-    .route(
-      "/quit",
-      get({
-        let shutdown_tx = shutdown_tx.clone();
-        || async move {
-          let _ = shutdown_tx.send(()).await;
-          "yes i am shutting down\n"
-        }
-      }),
-    )
-    .route(
-      "/json",
-      get(move |headers: HeaderMap| {
-        let counter_runs = counter_runs;
-        async move {
-          let counter_requests = inc_counter(&redb, 2).await.unwrap_or(0);
-          let response = JSONResponse::Counters { counter_runs, counter_requests };
-          let json_string = serde_json::to_string(&response).unwrap();
-          http::json_or_html(headers, &json_string).await
-        }
-      }),
-    );
+    .route("/healthz", get(health_handler))
+    .route("/", get(hello_handler))
+    .route("/quit", get(quit_handler))
+    .route("/json", get(json_handler))
+    .with_state(state);
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();
@@ -90,11 +99,12 @@ async fn run_main(redb: Arc<Database>, counter_runs: u64) {
   let mut int_signal = signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
 
   tokio::select! {
-    _ = server.with_graceful_shutdown(async move { shutdown_rx.recv().await; }) => { println! ("done"); }
+    _ = server.with_graceful_shutdown(async move { shutdown_rx.recv().await; }) => { println!("done"); }
     _ = tokio::signal::ctrl_c() => { println!("terminating due to Ctrl+C"); }
     _ = term_signal.recv() => { println!("terminating due to SIGTERM"); }
     _ = int_signal.recv() => { println!("terminating due to SIGINT"); }
   }
 
   println!("rust http server down");
+  Ok(())
 }
