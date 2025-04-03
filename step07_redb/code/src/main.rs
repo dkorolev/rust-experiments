@@ -34,11 +34,13 @@ impl DbRequestHandler for IncCounterRequest {
   type Response = u64;
   fn handle(&self, db: &Database) -> DbResult<Self::Response> {
     let write_txn = db.begin_write()?;
-    let mut table = write_txn.open_table(COUNTERS)?;
-    let current = table.get(&self.counter_type.0)?.map(|v| v.value()).unwrap_or(0);
-    let new_value = current + 1;
-    table.insert(&self.counter_type.0, new_value)?;
-    drop(table);
+    let new_value;
+    {
+      let mut table = write_txn.open_table(COUNTERS)?;
+      let current = table.get(&self.counter_type.0)?.map(|v| v.value()).unwrap_or(0);
+      new_value = current + 1;
+      table.insert(&self.counter_type.0, new_value)?;
+    }
     write_txn.commit()?;
     Ok(new_value)
   }
@@ -52,11 +54,13 @@ impl DbRequestHandler for IncStringRequest {
   type Response = String;
   fn handle(&self, db: &Database) -> DbResult<Self::Response> {
     let write_txn = db.begin_write()?;
-    let mut table = write_txn.open_table(STRINGS)?;
-    let current = table.get(self.idx)?.map(|v| v.value().to_string()).unwrap_or_default();
-    let new_value = format!("{}{}", current, ".");
-    table.insert(self.idx, new_value.as_str())?;
-    drop(table);
+    let new_value;
+    {
+      let mut table = write_txn.open_table(STRINGS)?;
+      let current = table.get(self.idx)?.map(|v| v.value().to_string()).unwrap_or_default();
+      new_value = format!("{}{}", current, ".");
+      table.insert(self.idx, new_value.as_str())?;
+    }
     write_txn.commit()?;
     Ok(new_value)
   }
