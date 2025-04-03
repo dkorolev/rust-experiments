@@ -28,6 +28,7 @@ enum JSONResponse {
   Point { x: i32, y: i32 },
   Message { text: String },
   Counters { counter_runs: u64, counter_requests: u64 },
+  StringCounter { value: String },
 }
 
 async fn health_handler() -> &'static str {
@@ -50,6 +51,13 @@ async fn json_handler(State(state): State<AppState>, headers: HeaderMap) -> impl
   http::json_or_html(headers, &json_string).await
 }
 
+async fn string_handler(State(state): State<AppState>, headers: HeaderMap) -> impl axum::response::IntoResponse {
+  let value = state.redb.inc_string(1).await.unwrap_or_default();
+  let response = JSONResponse::StringCounter { value };
+  let json_string = serde_json::to_string(&response).unwrap();
+  http::json_or_html(headers, &json_string).await
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
   fs::create_dir_all(&Path::new("./.db"))?;
@@ -65,6 +73,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     .route("/", get(hello_handler))
     .route("/quit", get(quit_handler))
     .route("/json", get(json_handler))
+    .route("/string", get(string_handler))
     .with_state(state);
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
