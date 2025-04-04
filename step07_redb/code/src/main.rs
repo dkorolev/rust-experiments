@@ -97,17 +97,17 @@ enum JSONResponse {
   StringCounter { value: String },
 }
 
-async fn health_handler() -> &'static str {
-  "OK\n"
+async fn health_handler() -> String {
+  "OK\n".into()
 }
 
-async fn hello_handler() -> &'static str {
-  "hello this is a rust http server\n"
+async fn hello_handler() -> String {
+  "hello this is a rust http server\n".into()
 }
 
-async fn quit_handler(State(state): State<AppState>) -> &'static str {
+async fn quit_handler(State(state): State<AppState>) -> String {
   let _ = state.shutdown_tx.send(()).await;
-  "yes i am shutting down\n"
+  "yes i am shutting down\n".into()
 }
 
 async fn json_handler(State(state): State<AppState>, headers: HeaderMap) -> impl axum::response::IntoResponse {
