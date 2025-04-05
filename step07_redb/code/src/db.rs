@@ -3,28 +3,28 @@ use std::any::Any;
 use std::error::Error;
 use tokio::sync::{mpsc, oneshot};
 
-pub type DbResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
+pub type AsyncDbResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
 const DEFAULT_REQUEST_QUEUE_SIZE: usize = 32;
 
 pub trait DbRequestHandler: Send + Sync {
   type Response: Send + 'static;
-  fn handle(&self, db: &Database) -> DbResult<Self::Response>;
+  fn handle(&self, db: &Database) -> AsyncDbResult<Self::Response>;
 }
 
 trait GenericRequestHandler: Send + Sync {
-  fn handle_generic_request(&self, db: &Database) -> DbResult<Box<dyn Any + Send>>;
+  fn handle_generic_request(&self, db: &Database) -> AsyncDbResult<Box<dyn Any + Send>>;
 }
 
 impl<T: DbRequestHandler> GenericRequestHandler for T {
-  fn handle_generic_request(&self, db: &Database) -> DbResult<Box<dyn Any + Send>> {
+  fn handle_generic_request(&self, db: &Database) -> AsyncDbResult<Box<dyn Any + Send>> {
     self.handle(db).map(|v| Box::new(v) as Box<dyn Any + Send>)
   }
 }
 
 struct GenericRequest {
   request: Box<dyn GenericRequestHandler + Send + Sync>,
-  response_tx: oneshot::Sender<DbResult<Box<dyn Any + Send>>>,
+  response_tx: oneshot::Sender<AsyncDbResult<Box<dyn Any + Send>>>,
 }
 
 #[derive(Clone)]
@@ -51,7 +51,7 @@ impl AsyncRedb {
     Self { request_tx }
   }
 
-  pub async fn send_request<R>(&self, request: R) -> DbResult<R::Response>
+  pub async fn run<R>(&self, request: R) -> AsyncDbResult<R::Response>
   where
     R: DbRequestHandler + Send + Sync + 'static,
   {
