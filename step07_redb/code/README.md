@@ -31,3 +31,11 @@ When a request comes with a duplicate `.id`, disregard it with the respective me
 
 Also, the `.id`-s should be non-empty strings.
 ```
+
+## Track and Return Recent Requests
+
+```
+Now, let's make sure some one thousand (configurable with a constant) most recent requests to `/sums` are journaled.
+
+Add a GET endpoint to return the most recent N, for a provided N, up to this configured constant number of them that are stored.
+```
