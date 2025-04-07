@@ -1,5 +1,9 @@
-use axum::{extract::State, routing::get, serve, Router};
-use hyper::header::HeaderMap;
+use axum::{
+  extract::State,
+  routing::{get, post},
+  serve, Router,
+};
+use hyper::{body::Bytes, header::HeaderMap, StatusCode};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fs, net::SocketAddr, path::Path};
@@ -66,6 +70,14 @@ impl DbRequestHandler for IncStringRequest {
   }
 }
 
+#[derive(Deserialize, Debug)]
+struct SumRequest {
+  id: String,
+  a: i32,
+  b: i32,
+  c: i32,
+}
+
 #[derive(Clone)]
 struct AppState {
   redb: AsyncRedb,
@@ -109,6 +121,19 @@ async fn string_handler(State(state): State<AppState>, headers: HeaderMap) -> im
   http::json_or_html(headers, &json_string).await
 }
 
+async fn sums_handler(body: Bytes) -> Result<&'static str, (StatusCode, String)> {
+  match serde_json::from_slice::<SumRequest>(&body) {
+    Ok(req) => {
+      if req.c == req.a + req.b {
+        Ok("OK\n")
+      } else {
+        Err((StatusCode::BAD_REQUEST, "Error: c must equal a + b".to_string()))
+      }
+    }
+    Err(e) => Err((StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e))),
+  }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
   fs::create_dir_all(&Path::new("./.db"))?;
@@ -125,6 +150,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     .route("/quit", get(quit_handler))
     .route("/json", get(json_handler))
     .route("/string", get(string_handler))
+    .route("/sums", post(sums_handler))
     .with_state(state);
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
