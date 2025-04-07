@@ -29,6 +29,7 @@ impl CounterType {
 
 static COUNTERS: TableDefinition<bool, u64> = TableDefinition::new("counters");
 static STRINGS: TableDefinition<u64, &str> = TableDefinition::new("strings");
+static PROCESSED_IDS: TableDefinition<&str, bool> = TableDefinition::new("processed_ids");
 
 struct IncCounterRequest {
   counter_type: CounterType,
@@ -67,6 +68,30 @@ impl DbRequestHandler for IncStringRequest {
     }
     write_txn.commit()?;
     Ok(new_value)
+  }
+}
+
+struct CheckAndStoreIdRequest(String);
+
+enum CheckAndStoreIdResponse {
+  Unique,
+  Duplicate,
+}
+
+impl DbRequestHandler for CheckAndStoreIdRequest {
+  type Response = CheckAndStoreIdResponse;
+
+  fn handle(&self, db: &Database) -> AsyncDbResult<Self::Response> {
+    let write_txn = db.begin_write()?;
+    {
+      let mut table = write_txn.open_table(PROCESSED_IDS)?;
+      if table.get(self.0.as_str())?.is_some() {
+        return Ok(CheckAndStoreIdResponse::Duplicate);
+      }
+      table.insert(self.0.as_str(), true)?;
+    }
+    write_txn.commit()?;
+    Ok(CheckAndStoreIdResponse::Unique)
   }
 }
 
@@ -121,16 +146,30 @@ async fn string_handler(State(state): State<AppState>, headers: HeaderMap) -> im
   http::json_or_html(headers, &json_string).await
 }
 
-async fn sums_handler(body: Bytes) -> Result<&'static str, (StatusCode, String)> {
+async fn sums_handler(State(state): State<AppState>, body: Bytes) -> Result<&'static str, (StatusCode, String)> {
   match serde_json::from_slice::<SumRequest>(&body) {
     Ok(req) => {
-      if req.c == req.a + req.b {
-        Ok("OK\n")
+      if req.id.is_empty() {
+        Err((StatusCode::BAD_REQUEST, "Error: id cannot be empty".to_string()))
       } else {
-        Err((StatusCode::BAD_REQUEST, "Error: c must equal a + b".to_string()))
+        match state.redb.run(CheckAndStoreIdRequest(req.id.clone())).await {
+          Ok(inner_result) => match inner_result {
+            CheckAndStoreIdResponse::Unique => {
+              if req.c == req.a + req.b {
+                Ok("OK\n")
+              } else {
+                Err((StatusCode::BAD_REQUEST, "Error: c must equal a + b.\n".to_string()))
+              }
+            }
+            CheckAndStoreIdResponse::Duplicate => {
+              Err((StatusCode::CONFLICT, "Error: Duplicate request ID.\n".to_string()))
+            }
+          },
+          Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+        }
       }
     }
-    Err(e) => Err((StatusCode::BAD_REQUEST, format!("Invalid JSON: {}", e))),
+    Err(e) => Err((StatusCode::BAD_REQUEST, format!("Invalid JSON: {}.\n", e))),
   }
 }
 

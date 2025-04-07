@@ -17,3 +17,17 @@ If the JSON schema does matech but `c` is not `a+b`, the endpoint should return 
 
 Otherwise the endpoint should return OK. Nothing else is required for now.
 ```
+
+## Keep `id`-s Unique
+
+Prompt:
+
+```
+Make sure to store the `.id`-s of the POST-ed payloads to `/sums` in the database.
+
+Process requests with new `.id`-s same way as before, just store those IDs.
+
+When a request comes with a duplicate `.id`, disregard it with the respective message.
+
+Also, the `.id`-s should be non-empty strings.
+```
