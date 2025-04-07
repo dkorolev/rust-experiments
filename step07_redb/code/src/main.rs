@@ -1,12 +1,12 @@
 use axum::{
-  extract::State,
+  extract::{Query, State},
   routing::{get, post},
   serve, Router,
 };
 use hyper::{body::Bytes, header::HeaderMap, StatusCode};
 use redb::{Database, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fs, net::SocketAddr, path::Path};
+use std::{error::Error, fs, net::SocketAddr, path::Path, time::SystemTime};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::{net::TcpListener, sync::mpsc};
 
@@ -19,6 +19,8 @@ use crate::{
   lib::http,
 };
 
+const DEFAULT_REQUEST_SIZE: u64 = 10;
+const MAX_REQUEST_SIZE: u64 = 100;
 #[repr(transparent)]
 struct CounterType(bool);
 
@@ -30,6 +32,8 @@ impl CounterType {
 static COUNTERS: TableDefinition<bool, u64> = TableDefinition::new("counters");
 static STRINGS: TableDefinition<u64, &str> = TableDefinition::new("strings");
 static PROCESSED_IDS: TableDefinition<&str, bool> = TableDefinition::new("processed_ids");
+static SUMS_JOURNAL: TableDefinition<u64, &[u8]> = TableDefinition::new("sums_journal");
+static JOURNAL_META: TableDefinition<&str, u64> = TableDefinition::new("journal_meta");
 
 struct IncCounterRequest {
   counter_type: CounterType,
@@ -103,6 +107,66 @@ struct SumRequest {
   c: i32,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct JournalEntry {
+  id: String,
+  a: i32,
+  b: i32,
+  c: i32,
+  timestamp_us: u64,
+}
+
+struct AddToJournalRequest(JournalEntry);
+
+impl DbRequestHandler for AddToJournalRequest {
+  type Response = ();
+
+  fn handle(&self, db: &Database) -> AsyncDbResult<Self::Response> {
+    let serialized = serde_json::to_vec(&self.0)?;
+
+    let write_txn = db.begin_write()?;
+    {
+      let mut journal_meta = write_txn.open_table(JOURNAL_META)?;
+      let mut journal = write_txn.open_table(SUMS_JOURNAL)?;
+
+      let idx = journal_meta.get("idx")?.map(|v| v.value()).unwrap_or(0);
+      journal.insert(idx, serialized.as_slice())?;
+      journal_meta.insert("idx", idx + 1)?;
+    }
+    write_txn.commit()?;
+    Ok(())
+  }
+}
+
+struct GetJournalRequest(u64);
+
+impl DbRequestHandler for GetJournalRequest {
+  type Response = Vec<JournalEntry>;
+
+  fn handle(&self, db: &Database) -> AsyncDbResult<Self::Response> {
+    let read_txn = db.begin_read()?;
+    let journal_meta = read_txn.open_table(JOURNAL_META)?;
+    let journal = read_txn.open_table(SUMS_JOURNAL)?;
+
+    let idx = journal_meta.get("idx")?.map(|v| v.value()).unwrap_or(0);
+
+    let mut result = Vec::new();
+    let n = std::cmp::min(std::cmp::min(self.0, idx), MAX_REQUEST_SIZE);
+
+    let i0 = idx - n;
+
+    for i in 0..n {
+      if let Some(entry_bytes) = journal.get(i0 + i)? {
+        if let Ok(entry) = serde_json::from_slice::<JournalEntry>(entry_bytes.value()) {
+          result.push(entry);
+        }
+      }
+    }
+
+    Ok(result)
+  }
+}
+
 #[derive(Clone)]
 struct AppState {
   redb: AsyncRedb,
@@ -117,6 +181,7 @@ enum JSONResponse {
   Message { text: String },
   Counters { counter_runs: u64, counter_requests: u64 },
   StringCounter { value: String },
+  Journal { entries: Vec<JournalEntry> },
 }
 
 async fn health_handler() -> &'static str {
@@ -146,16 +211,46 @@ async fn string_handler(State(state): State<AppState>, headers: HeaderMap) -> im
   http::json_or_html(headers, &json_string).await
 }
 
+#[derive(Deserialize)]
+struct JournalQuery {
+  #[serde(default = "default_request_size")]
+  n: u64,
+}
+
+fn default_request_size() -> u64 {
+  DEFAULT_REQUEST_SIZE
+}
+
+async fn journal_handler(
+  State(state): State<AppState>, headers: HeaderMap, Query(query): Query<JournalQuery>,
+) -> impl axum::response::IntoResponse {
+  let entries = state.redb.run(GetJournalRequest(query.n)).await.unwrap_or_default();
+  let response = JSONResponse::Journal { entries };
+  let json_string = serde_json::to_string(&response).unwrap();
+  http::json_or_html(headers, &json_string).await
+}
+
 async fn sums_handler(State(state): State<AppState>, body: Bytes) -> Result<&'static str, (StatusCode, String)> {
   match serde_json::from_slice::<SumRequest>(&body) {
     Ok(req) => {
       if req.id.is_empty() {
-        Err((StatusCode::BAD_REQUEST, "Error: id cannot be empty".to_string()))
+        Err((StatusCode::BAD_REQUEST, "Error: id cannot be empty.\n".to_string()))
       } else {
         match state.redb.run(CheckAndStoreIdRequest(req.id.clone())).await {
           Ok(inner_result) => match inner_result {
             CheckAndStoreIdResponse::Unique => {
-              if req.c == req.a + req.b {
+              let result = req.c == req.a + req.b;
+              if result {
+                let _ = state
+                  .redb
+                  .run(AddToJournalRequest(JournalEntry {
+                    id: req.id.clone(),
+                    a: req.a,
+                    b: req.b,
+                    c: req.c,
+                    timestamp_us: SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_micros() as u64,
+                  }))
+                  .await;
                 Ok("OK\n")
               } else {
                 Err((StatusCode::BAD_REQUEST, "Error: c must equal a + b.\n".to_string()))
@@ -189,6 +284,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     .route("/quit", get(quit_handler))
     .route("/json", get(json_handler))
     .route("/string", get(string_handler))
+    .route("/journal", get(journal_handler))
     .route("/sums", post(sums_handler))
     .with_state(state);
 
