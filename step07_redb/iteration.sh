@@ -31,6 +31,7 @@ echo
 curl -s -d '{"id": "test", "a": 2, "b": 2, "c": 5}' http://localhost:3000/sums
 curl -s -d '{"id": "test", "a": 2, "b": 3, "c": 5}' http://localhost:3000/sums
 
+sleep 1
 TS=$(date +%s)
 echo "TS: $TS"
 
