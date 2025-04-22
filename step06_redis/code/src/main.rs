@@ -56,36 +56,39 @@ async fn try_sub(args: &Args) -> Result<()> {
   let mut stream = pubsub.on_message();
 
   let mut con = client.get_multiplexed_async_connection().await?;
+  let mut listen = async || {
+    while let Some(msg) = stream.next().await {
+      let payload: String = msg.get_payload().unwrap();
+      println!(">> {}", payload);
+    }
+  };
 
-  let timeout = async || sleep(Duration::from_secs_f64(args.subscribe_for_seconds)).await;
-  let mut optionally_published = false;
-  let mut and_optionally_publish = async || {
-    if !optionally_published {
-      optionally_published = true;
-      if let Some(delay) = args.and_publish_in_seconds {
-        sleep(Duration::from_secs_f64(delay)).await;
-        println!("publishing from rust from a separate green thread");
-        con.publish::<_, _, ()>("redis_channel", "published from rust after a delay").await.unwrap()
-      }
+  let mut optionally_publish = async || {
+    if let Some(delay) = args.and_publish_in_seconds {
+      sleep(Duration::from_secs_f64(delay)).await;
+      println!("publishing from rust from a separate green thread");
+      con.publish::<_, _, ()>("redis_channel", "published from rust after a delay").await.unwrap()
     }
     std::future::pending::<()>().await
   };
+
+  let timeout = async || sleep(Duration::from_secs_f64(args.subscribe_for_seconds)).await;
 
   println!("listening to messages on `redis_channel`");
 
   loop {
     select! {
-      msg = stream.next() => {
-        let payload: String = msg.unwrap().get_payload()?;
-        println!(">> {}", payload);
+      _ = listen() => {
+        println!("terminating because the pubsub channel is closed");
+        break Ok(())
       },
+      _ = optionally_publish() => {
+        unreachable!()
+      }
       _ = timeout() => {
         println!("terminating by timeout");
         break Ok(())
       },
-      _ = and_optionally_publish() => {
-        unreachable!()
-      }
     }
   }
 }
