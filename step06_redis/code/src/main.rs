@@ -57,13 +57,13 @@ async fn try_sub(args: &Args) -> Result<()> {
 
   let mut con = client.get_multiplexed_async_connection().await?;
 
-  let timeout = async || sleep(Duration::from_millis((1e3 * args.subscribe_for_seconds).round() as u64)).await;
+  let timeout = async || sleep(Duration::from_secs_f64(args.subscribe_for_seconds)).await;
   let mut optionally_published = false;
   let mut and_optionally_publish = async || {
     if !optionally_published {
       optionally_published = true;
       if let Some(delay) = args.and_publish_in_seconds {
-        sleep(Duration::from_millis((1e3 * delay).round() as u64)).await;
+        sleep(Duration::from_secs_f64(delay)).await;
         println!("publishing from rust from a separate green thread");
         con.publish::<_, _, ()>("redis_channel", "published from rust after a delay").await.unwrap()
       }
