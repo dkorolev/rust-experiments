@@ -67,14 +67,14 @@ async fn try_sub(args: &Args) -> Result<()> {
   let cancel_token = CancellationToken::new();
   let cloned_token = cancel_token.clone();
   let sleed_duration = args.subscribe_for_seconds;
-  tokio::spawn(async move {
+  tokio::task::spawn_local(async move {
     sleep(Duration::from_secs_f64(sleed_duration)).await;
     cloned_token.cancel();
-  });  
+  });
 
   if let Some(delay) = args.and_publish_in_seconds {
     let cloned_token = cancel_token.clone();
-    tokio::spawn(async move {
+    tokio::task::spawn_local(async move {
       select! {
         _ = async move {
           sleep(Duration::from_secs_f64(delay)).await;
@@ -108,19 +108,25 @@ async fn try_sub(args: &Args) -> Result<()> {
 async fn main() -> ExitCode {
   let args = Args::parse();
 
-  match args.mode.as_str() {
-    "check" => try_check(&args).await,
-    "test" => try_test(&args).await,
-    "pub" => try_pub(&args).await,
-    "sub" => try_sub(&args).await,
-    _ => Err(anyhow!("This `--mode` value is not supported.")),
-  }
-  .map_or_else(
-    |err| {
-      println!("Error: {}", err);
-      1
-    },
-    |_| 0,
-  )
-  .into()
+  let local = tokio::task::LocalSet::new();
+
+  local
+    .run_until(async {
+      match args.mode.as_str() {
+        "check" => try_check(&args).await,
+        "test" => try_test(&args).await,
+        "pub" => try_pub(&args).await,
+        "sub" => try_sub(&args).await,
+        _ => Err(anyhow!("This `--mode` value is not supported.")),
+      }
+      .map_or_else(
+        |err| {
+          println!("Error: {}", err);
+          1
+        },
+        |_| 0,
+      )
+      .into()
+    })
+    .await
 }
