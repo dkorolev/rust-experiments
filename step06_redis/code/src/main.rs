@@ -5,6 +5,8 @@ use clap::Parser;
 use futures::StreamExt;
 use redis::AsyncCommands;
 use std::process::ExitCode;
+use tokio::select;
+use tokio::time::{Duration, sleep};
 
 #[derive(Parser)]
 struct Args {
@@ -13,6 +15,12 @@ struct Args {
 
   #[arg(long)]
   mode: String,
+
+  #[arg(long, default_value = "5.0")]
+  subscribe_for_seconds: f64,
+
+  #[arg(long)]
+  and_publish_in_seconds: Option<f64>,
 }
 
 async fn try_check(args: &Args) -> Result<()> {
@@ -47,13 +55,39 @@ async fn try_sub(args: &Args) -> Result<()> {
   pubsub.subscribe("redis_channel").await?;
   let mut stream = pubsub.on_message();
 
-  println!("ready lo listen to messages");
-  while let Some(msg) = stream.next().await {
-    let payload: String = msg.get_payload()?;
-    println!(">> {}", payload);
-  }
+  let mut con = client.get_multiplexed_async_connection().await?;
 
-  Ok(())
+  let timeout = async || sleep(Duration::from_millis((1e3 * args.subscribe_for_seconds).round() as u64)).await;
+  let mut optionally_published = false;
+  let mut and_optionally_publish = async || {
+    if !optionally_published {
+      optionally_published = true;
+      if let Some(delay) = args.and_publish_in_seconds {
+        sleep(Duration::from_millis((1e3 * delay).round() as u64)).await;
+        println!("publishing from rust from a separate green thread");
+        con.publish::<_, _, ()>("redis_channel", "published from rust after a delay").await.unwrap()
+      }
+    }
+    std::future::pending::<()>().await
+  };
+
+  println!("listening to messages on `redis_channel`");
+
+  loop {
+    select! {
+      msg = stream.next() => {
+        let payload: String = msg.unwrap().get_payload()?;
+        println!(">> {}", payload);
+      },
+      _ = timeout() => {
+        println!("terminating by timeout");
+        break Ok(())
+      },
+      _ = and_optionally_publish() => {
+        unreachable!()
+      }
+    }
+  }
 }
 
 #[tokio::main]

@@ -27,5 +27,9 @@ echo 'Running the test.'
 docker run --add-host=host.docker.internal:host-gateway --rm -t demo --mode test --redis redis://host.docker.internal
 echo 'Test run successfully.'
 
+echo 'Running the pubsub test.'
+docker run --add-host=host.docker.internal:host-gateway --rm -t demo --mode sub --and-publish-in-seconds=2.5 --redis redis://host.docker.internal
+echo 'The pubsub test run successfully.'
+
 docker stop redis-for-rust
 echo 'Redis stopped.'
