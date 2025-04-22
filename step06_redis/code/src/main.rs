@@ -76,20 +76,18 @@ async fn try_sub(args: &Args) -> Result<()> {
 
   println!("listening to messages on `redis_channel`");
 
-  loop {
-    select! {
-      _ = listen() => {
-        println!("terminating because the pubsub channel is closed");
-        break Ok(())
-      },
+  select! {
+    _ = listen() => {
+      println!("terminating because the pubsub channel is closed");
+      Ok(())
+    },
       _ = optionally_publish() => {
         unreachable!()
       }
-      _ = timeout() => {
-        println!("terminating by timeout");
-        break Ok(())
-      },
-    }
+    _ = timeout() => {
+      println!("terminating by timeout");
+      Ok(())
+    },
   }
 }
 
