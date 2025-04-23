@@ -37,19 +37,14 @@ async fn ws_handler(ws: WebSocketUpgrade, State(tx): State<Arc<watch::Sender<Str
 
 async fn ws_handler_impl(socket: WebSocket, rx: watch::Receiver<String>) {
   if let Err(e) = ws_handler_impl_safe(socket, rx).await {
-    let mut ignore_broken_pipe = false;
-    let mut walk_error_chain = Some(e.as_ref());
-    while let Some(err) = walk_error_chain {
-      if let Some(inner) = err.downcast_ref::<std::io::Error>() {
-        if inner.kind() == std::io::ErrorKind::BrokenPipe {
-          ignore_broken_pipe = true;
-          break;
-        }
-      }
-      walk_error_chain = err.source();
+    let mut err = e.as_ref();
+    while err.source().is_some() {
+      err = err.source().unwrap();
     }
-    if !ignore_broken_pipe {
-      println!("websocket failure: {:#?}", e);
+    if let Some(err) = err.downcast_ref::<std::io::Error>() {
+      if err.kind() != std::io::ErrorKind::BrokenPipe {
+        println!("websocket failure: {:#?}", err);
+      }
     }
   }
 }
