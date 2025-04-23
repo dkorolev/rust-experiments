@@ -12,7 +12,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
   net::TcpListener,
   signal::unix::{signal, SignalKind},
-  sync::{broadcast, mpsc},
+  sync::{mpsc, watch},
   time::interval,
 };
 
@@ -31,15 +31,36 @@ mod lib {
 }
 use crate::lib::ws_html::WsHtmlTemplate;
 
-async fn ws_handler(ws: WebSocketUpgrade, State(tx): State<Arc<broadcast::Sender<String>>>) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(tx): State<Arc<watch::Sender<String>>>) -> impl IntoResponse {
   ws.on_upgrade(move |socket| ws_handler_impl(socket, tx.subscribe()))
 }
 
-async fn ws_handler_impl(mut socket: WebSocket, mut rx: broadcast::Receiver<String>) {
-  while let Ok(msg) = rx.recv().await {
-    if socket.send(Message::Text(msg.into())).await.is_err() {
-      break;
+async fn ws_handler_impl(socket: WebSocket, rx: watch::Receiver<String>) {
+  let _ = ws_handler_impl_safe(socket, rx).await.map_err(|e| {
+    let mut ignore_broken_pipe = false;
+    let mut walk_error_chain = Some(e.as_ref());
+    while let Some(err) = walk_error_chain {
+      if let Some(inner) = err.downcast_ref::<std::io::Error>() {
+        if inner.kind() == std::io::ErrorKind::BrokenPipe {
+          ignore_broken_pipe = true;
+          break;
+        }
+      }
+      walk_error_chain = err.source();
     }
+    if !ignore_broken_pipe {
+      println!("websocket failure: {:#?}", e);
+    }
+  });
+}
+
+async fn ws_handler_impl_safe(
+  mut socket: WebSocket, mut rx: watch::Receiver<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+  loop {
+    rx.changed().await?;
+    let s: String = { rx.borrow().clone() };
+    socket.send(Message::Text(s.into())).await?;
   }
 }
 
@@ -58,7 +79,7 @@ async fn main() {
 
   let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
-  let (tx, _) = broadcast::channel::<String>(60);
+  let (tx, _) = watch::channel(String::from("ws starting up ..."));
 
   {
     let tx = tx.clone();
