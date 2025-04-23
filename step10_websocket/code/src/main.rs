@@ -41,10 +41,13 @@ async fn ws_handler_impl(socket: WebSocket, rx: watch::Receiver<String>) {
     while err.source().is_some() {
       err = err.source().unwrap();
     }
-    if let Some(err) = err.downcast_ref::<std::io::Error>() {
-      if err.kind() != std::io::ErrorKind::BrokenPipe {
-        println!("websocket failure: {:#?}", err);
-      }
+
+    let mut broken_pipe = false;
+    if let Some(error) = err.downcast_ref::<std::io::Error>() {
+      broken_pipe = error.kind() == std::io::ErrorKind::BrokenPipe;
+    }
+    if !broken_pipe {
+      println!("websocket failure: {:#?}", e);
     }
   }
 }
