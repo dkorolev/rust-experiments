@@ -9,7 +9,7 @@
   <script>
     const output = document.getElementById("output");
     const ws = new WebSocket("{{ ws_address }}");
-    ws.onmessage = (e) => { output.textContent = JSON.stringify(e.data, null, 2); };
+    ws.onmessage = (e) => { output.textContent = (typeof e.data === "string" ? e.data : JSON.stringify(e.data, null, 2)); };
     ws.onerror = (e) => { output.textContent = "ws error: " + JSON.stringify(e, null, 2); };
   </script>
 </body>
