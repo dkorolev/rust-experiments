@@ -27,8 +27,17 @@ while true ; do
   echo "server not yet healthy"
 done
 
-# TODO(dkorolev): Test.
+S="$(npx wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
+G="magic"
+
+if [ "$S" != "$G" ] ; then
+  echo "TEST FAILED, expected '$G', seeing '$S'."
+fi
 
 curl -s localhost:3000/quit
 
 wait $PID
+
+if [ "$S" = "$G" ] ; then
+  exit 1
+fi

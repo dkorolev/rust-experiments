@@ -32,15 +32,23 @@ mod lib {
 use crate::lib::ws_html::WsHtmlTemplate;
 
 async fn ws_handler(ws: WebSocketUpgrade, State(tx): State<Arc<broadcast::Sender<String>>>) -> impl IntoResponse {
-  ws.on_upgrade(move |socket| handle_socket(socket, tx.subscribe()))
+  ws.on_upgrade(move |socket| ws_handler_impl(socket, tx.subscribe()))
 }
 
-async fn handle_socket(mut socket: WebSocket, mut rx: broadcast::Receiver<String>) {
+async fn ws_handler_impl(mut socket: WebSocket, mut rx: broadcast::Receiver<String>) {
   while let Ok(msg) = rx.recv().await {
     if socket.send(Message::Text(msg)).await.is_err() {
       break;
     }
   }
+}
+
+async fn test_ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| test_ws_handler_impl(socket))
+}
+
+async fn test_ws_handler_impl(mut socket: WebSocket) {
+  let _ = socket.send(Message::Text(String::from("magic"))).await;
 }
 
 #[tokio::main]
@@ -69,6 +77,7 @@ async fn main() {
     .route("/healthz", get(|| async { "OK\n" }))
     .route("/", get(|| async { axum::response::Html(html) }))
     .route("/ws", get(ws_handler))
+    .route("/test_ws", get(test_ws_handler))
     .route(
       "/quit",
       get({
