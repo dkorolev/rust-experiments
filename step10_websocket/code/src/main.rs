@@ -37,7 +37,7 @@ async fn ws_handler(ws: WebSocketUpgrade, State(tx): State<Arc<broadcast::Sender
 
 async fn ws_handler_impl(mut socket: WebSocket, mut rx: broadcast::Receiver<String>) {
   while let Ok(msg) = rx.recv().await {
-    if socket.send(Message::Text(msg)).await.is_err() {
+    if socket.send(Message::Text(msg.into())).await.is_err() {
       break;
     }
   }
@@ -48,7 +48,7 @@ async fn test_ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
 }
 
 async fn test_ws_handler_impl(mut socket: WebSocket) {
-  let _ = socket.send(Message::Text(String::from("magic"))).await;
+  let _ = socket.send(Message::Text("magic".into())).await;
 }
 
 #[tokio::main]

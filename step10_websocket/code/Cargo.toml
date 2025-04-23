@@ -4,7 +4,7 @@ edition = "2021"
 
 [dependencies]
 askama = "0.12.1"
-axum = { version = "0.7", features = ["ws"] }
+axum = { version = "0.8.3", features = ["ws"] }
 chrono = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
