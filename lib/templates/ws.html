@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WS</title>
+  <meta charset="UTF-8">
+</head>
+<body>
+  <pre id="output">loading ... if you see ticking time here it's working; and if in doubt refresh the page</pre>
+  <script>
+    const output = document.getElementById("output");
+    const ws = new WebSocket("{{ ws_address }}");
+    ws.onmessage = (e) => { output.textContent = (typeof e.data === "string" ? e.data : JSON.stringify(e.data, null, 2)); };
+    ws.onerror = (e) => { output.textContent = "ws error: " + JSON.stringify(e, null, 2); };
+  </script>
+</body>
+</html>
