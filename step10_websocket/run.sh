@@ -12,9 +12,20 @@ set -e
 [ -L code/templates ] && (unlink code/templates && echo 'Symlink of `code/templates` removed.') || echo 'No `code/templates` symlink to remove.'
 [ -d code/templates ] && echo 'The `code/templates` dir exists, using it.' || (cp -r ../lib/templates code/ && echo 'Copied `../lib/templates` into `code/templates`.')
 
+echo '`npm i ws`.'
+npm i ws
+echo '`npm i ws`: success.'
+
 docker build -f ../Dockerfile.template . -t demo
 
-docker run --rm --network=bridge -p 3000:3000 -t demo &
+function cleanup {
+  echo -n "trap: stopping the docker container "
+  docker stop -t 0 rust_experiments_docker_container
+  echo "docker stop done"
+}
+trap cleanup EXIT
+
+docker run --rm --name rust_experiments_docker_container --network=bridge -p 3000:3000 -t demo &
 PID=$!
 
 while true ; do
@@ -27,17 +38,18 @@ while true ; do
   echo "server not yet healthy"
 done
 
-S="$(npx wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
+WS_NODEJS_CODE="const WS = require('ws'); (new WS('ws://localhost:3000/test_ws')).on('message', buf => console.log(buf.toString()));"
+
+S="$(node -e "$WS_NODEJS_CODE" | head -n 1)"
 G="magic"
 
 if [ "$S" != "$G" ] ; then
   echo "TEST FAILED, expected '$G', seeing '$S'."
+  exit 1
 fi
 
 curl -s localhost:3000/quit
 
-wait $PID
+trap - EXIT
 
-if [ "$S" = "$G" ] ; then
-  exit 1
-fi
+wait $PID
