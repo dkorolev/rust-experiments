@@ -37,13 +37,13 @@ struct OutputWrapper {
 }
 
 impl OutputWrapper {
-  fn new(socket: WebSocket) -> Self {
-    Self { socket: Arc::new(Mutex::new(socket)) }
-  }
-
-  async fn write(&self, text: impl Into<axum::extract::ws::Message>) {
+  async fn write_impl(&self, text: impl Into<axum::extract::ws::Message>) {
     let mut socket = self.socket.lock().await;
     let _ = socket.send(text.into()).await;
+  }
+
+  async fn write(&self, text: String) {
+    self.write_impl(text).await;
   }
 }
 
@@ -66,7 +66,7 @@ impl TaskStateMachine for DelayedMessageTask {
       self.sleep = false;
       Some(self.t)
     } else {
-      writer.write(Message::Text(format!("Delayed by {}ms: `{}`.", self.t, self.s).into())).await;
+      writer.write(format!("Delayed by {}ms: `{}`.", self.t, self.s)).await;
       None
     }
   }
@@ -85,10 +85,10 @@ impl TaskStateMachine for DivisorsIterationTask {
       self.i -= 1
     }
     if self.i == 0 {
-      writer.write(Message::Text(format!("Done for {}!", self.n).into())).await;
+      writer.write(format!("Done for {}!", self.n)).await;
       None
     } else {
-      writer.write(Message::Text(format!("A divisor of {} is {}.", self.n, self.i).into())).await;
+      writer.write(format!("A divisor of {} is {}.", self.n, self.i)).await;
       let delay_ms = self.i * 10;
       self.i -= 1;
       Some(delay_ms)
@@ -108,16 +108,6 @@ struct StateMachineAdvancer {
   writer: Arc<OutputWrapper>,
 }
 
-impl StateMachineAdvancer {
-  fn new<T: TaskStateMachine + 'static>(scheduled_timestamp: Instant, task: T, writer: Arc<OutputWrapper>) -> Self {
-    Self { scheduled_timestamp, task: Box::new(task), writer }
-  }
-
-  async fn step(&mut self) -> Option<u64> {
-    self.task.step(&self.writer).await
-  }
-}
-
 struct AppState {
   fsm: FiniteStateMachine,
   quit_tx: mpsc::Sender<()>,
@@ -125,13 +115,12 @@ struct AppState {
 
 impl AppState {
   async fn schedule<T: TaskStateMachine + 'static>(&self, socket: WebSocket, task: T) {
-    let writer = Arc::new(OutputWrapper::new(socket));
-    let scheduled_timestamp = Instant::now();
-    self.fsm.pending_operations.lock().await.push(Reverse(StateMachineAdvancer::new(
-      scheduled_timestamp,
-      task,
-      writer.clone(),
-    )));
+    self.fsm.pending_operations.lock().await.push(Reverse(StateMachineAdvancer {
+      scheduled_timestamp: Instant::now(),
+      task: Box::new(task),
+      // NOTE(dkorolev): I'm positive this can be simplified!
+      writer: Arc::new(OutputWrapper { socket: Arc::new(Mutex::new(socket)) }),
+    }));
   }
 }
 
@@ -247,19 +236,19 @@ async fn execute_pending_operations(state: Arc<AppState>) {
       if let Some(peek) = pending_operations.peek() {
         if peek.0.scheduled_timestamp <= now {
           let scheduled_timestamp = peek.0.scheduled_timestamp;
-          if let Some(Reverse(task)) = pending_operations.pop() {
-            task_to_execute = Some((scheduled_timestamp, task));
+          if let Some(Reverse(state_machine_advancer)) = pending_operations.pop() {
+            task_to_execute = Some((scheduled_timestamp, state_machine_advancer));
           }
         }
       }
     }
 
-    if let Some((timestamp, mut task)) = task_to_execute {
-      match task.step().await {
+    if let Some((timestamp, mut state_machine_advancer)) = task_to_execute {
+      match state_machine_advancer.task.step(&state_machine_advancer.writer).await {
         Some(delay_ms) => {
           // Re-insert this task back into the queue, after `delay_ms`.
-          task.scheduled_timestamp = timestamp + Duration::from_millis(delay_ms);
-          state.fsm.pending_operations.lock().await.push(Reverse(task));
+          state_machine_advancer.scheduled_timestamp = timestamp + Duration::from_millis(delay_ms);
+          state.fsm.pending_operations.lock().await.push(Reverse(state_machine_advancer));
         }
         None => {
           // The task is complete, no need to reschedule, drop it.
