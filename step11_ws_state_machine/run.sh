@@ -29,8 +29,8 @@ docker run --rm --name rust_experiments_docker_container --network=bridge -p 300
 PID=$!
 
 while true ; do
-  R="$(curl -s localhost:3000/healthz || echo NOPE)"
-  if [ "$R" = "OK" ] ; then
+  R="$(curl -s localhost:3000 || echo NOPE)"
+  if [ "$R" = "magic" ] ; then
     echo "server healthy"
     break
   fi
@@ -38,10 +38,10 @@ while true ; do
   echo "server not yet healthy"
 done
 
-WS_NODEJS_CODE="const WS = require('ws'); (new WS('ws://localhost:3000/test_ws')).on('message', buf => console.log(buf.toString()));"
+WS_NODEJS_CODE="const WS = require('ws'); (new WS('ws://localhost:3000/add/2/3')).on('message', buf => console.log(buf.toString()));"
 
 S="$(node -e "$WS_NODEJS_CODE" | head -n 1)"
-G="magic"
+G="5"
 
 if [ "$S" != "$G" ] ; then
   echo "TEST FAILED, expected '$G', seeing '$S'."

@@ -1,5 +1,6 @@
-use axum::extract::ws::{Message, WebSocket};
 use axum::{
+  extract::ws::{Message, WebSocket},
+  extract::Path,
   extract::{State, WebSocketUpgrade},
   response::IntoResponse,
   routing::get,
@@ -7,10 +8,7 @@ use axum::{
 };
 use clap::Parser;
 use std::{net::SocketAddr, sync::Arc};
-use tokio::{
-  net::TcpListener,
-  sync::{mpsc, Mutex},
-};
+use tokio::{net::TcpListener, sync::mpsc};
 
 #[derive(Parser)]
 struct Args {
@@ -18,54 +16,60 @@ struct Args {
   port: u16,
 }
 
-struct SharedState {
-  magic: String,
+struct FiniteStateMachine {
+  the_answer: String,
 }
 
-async fn test_ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<Mutex<SharedState>>>) -> impl IntoResponse {
-  let magic = state.lock().await.magic.clone();
-  ws.on_upgrade(move |socket| async move { test_ws_handler_impl(socket, magic).await })
+struct AppState {
+  fsm: FiniteStateMachine,
+  quit_tx: mpsc::Sender<()>,
 }
 
-async fn test_ws_handler_impl(mut socket: WebSocket, msg: String) {
-  let _ = socket.send(Message::Text(msg.into())).await;
+async fn add_handler(
+  ws: WebSocketUpgrade, Path((a, b)): Path<(i32, i32)>, State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| add_handler_ws(socket, a, b, state))
+}
+
+async fn add_handler_ws(mut socket: WebSocket, a: i32, b: i32, _state: Arc<AppState>) {
+  let _ = socket.send(Message::Text((a + b).to_string().into())).await;
+}
+
+async fn root_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+  state.fsm.the_answer.clone()
+}
+
+async fn quit_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+  let _ = state.quit_tx.send(()).await;
+  "TY\n"
 }
 
 #[tokio::main]
 async fn main() {
   let args = Args::parse();
 
-  let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+  let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
-  let shared_state = Arc::new(Mutex::new(SharedState { magic: String::from("magic") }));
+  let app_state = Arc::new(AppState { fsm: FiniteStateMachine { the_answer: String::from("magic") }, quit_tx });
 
   let app = Router::new()
-    .route("/healthz", get(|| async { "OK\n" }))
-    .route("/test_ws", get(test_ws_handler))
-    .route(
-      "/quit",
-      get({
-        let shutdown_tx = shutdown_tx.clone();
-        || async move {
-          let _ = shutdown_tx.send(()).await;
-          "yes i am shutting down\n"
-        }
-      }),
-    )
-    .with_state(shared_state);
+    .route("/", get(root_handler))
+    .route("/add/{a}/{b}", get(add_handler))
+    .route("/quit", get(quit_handler))
+    .with_state(app_state.clone());
 
   let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
   let listener = TcpListener::bind(addr).await.unwrap();
 
-  println!("rust http server with websockets ready on {addr}");
+  println!("rust ws state machine demo up on {addr}");
 
   let server = serve(listener, app);
 
-  let _ = server
+  _ = server
     .with_graceful_shutdown(async move {
-      shutdown_rx.recv().await;
+      quit_rx.recv().await;
     })
     .await;
 
-  println!("rust http server with websockets down");
+  println!("rust ws state machine demo down");
 }
