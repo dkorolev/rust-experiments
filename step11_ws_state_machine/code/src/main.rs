@@ -51,7 +51,7 @@ enum StepResult {
   Completed,
   FixedSleep(u64, TaskState),
   ResumeInstantly(TaskState),
-  WriteAnd(String, Box<TaskState>),
+  WriteAnd(String, TaskState),
 }
 
 use crate::StepResult::*;
@@ -71,7 +71,7 @@ fn global_step(state: &TaskState) -> StepResult {
       FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
     }
     TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
-      WriteAnd(format!("Delayed by {}ms: `{}`.", sleep_ms, message), Box::new(TaskState::Completed))
+      WriteAnd(format!("Delayed by {}ms: `{}`.", sleep_ms, message), TaskState::Completed)
     }
     TaskState::DivisorsTaskBegin(n) => ResumeInstantly(TaskState::DivisorsTaskIteration(*n, *n)),
     TaskState::DivisorsTaskIteration(n, arg_i) => {
@@ -80,9 +80,9 @@ fn global_step(state: &TaskState) -> StepResult {
         i -= 1
       }
       if i == 0 {
-        WriteAnd(format!("Done for {}!", n), Box::new(TaskState::Completed))
+        WriteAnd(format!("Done for {}!", n), TaskState::Completed)
       } else {
-        WriteAnd(format!("A divisor of {} is {}.", n, i), Box::new(TaskState::DivisorsTaskIteration(*n, i - 1)))
+        WriteAnd(format!("A divisor of {} is {}.", n, i), TaskState::DivisorsTaskIteration(*n, i - 1))
       }
     }
     TaskState::Completed => Completed,
@@ -285,7 +285,7 @@ async fn execute_pending_operations(state: Arc<AppState>) {
         }
         WriteAnd(message, next_step) => {
           state_machine_advancer.writer.write(message).await;
-          state_machine_advancer.state = *next_step;
+          state_machine_advancer.state = next_step;
           let mut fsm = state.fsm.lock().await;
           fsm.pending_operations.push(Reverse(state_machine_advancer));
         }
