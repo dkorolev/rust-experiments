@@ -38,6 +38,6 @@ curl -s localhost:3000/quit
 
 wait $PID
 
-if [ "$S" = "$G" ] ; then
+if [ "$S" != "$G" ] ; then
   exit 1
 fi
