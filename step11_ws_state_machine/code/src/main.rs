@@ -103,6 +103,33 @@ async fn ackermann_handler_ws(socket: WebSocket, m: i64, n: i64, _state: Arc<App
   let _ = async_ack(ctx, m, n, 0).await;
 }
 
+async fn delay_handler(
+  ws: WebSocketUpgrade, Path((t, s)): Path<(u64, String)>, State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| delay_handler_ws(socket, t, s, state))
+}
+
+async fn delay_handler_ws(mut socket: WebSocket, t: u64, s: String, _state: Arc<AppState>) {
+  tokio::time::sleep(std::time::Duration::from_millis(t)).await;
+  let _ = socket.send(Message::Text(format!("Delayed by {t}ms: `{s}`.").into())).await;
+}
+
+async fn divisors_handler(
+  ws: WebSocketUpgrade, Path(a): Path<u64>, State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| divisors_handler_ws(socket, a, state))
+}
+
+async fn divisors_handler_ws(mut socket: WebSocket, n: u64, _state: Arc<AppState>) {
+  for i in (1..=n).rev() {
+    if n % i == 0 {
+      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+      let _ = socket.send(Message::Text(format!("A divisor of {n} is {i}.").into())).await;
+    }
+  }
+  let _ = socket.send(Message::Text(format!("Done for {n}!").into())).await;
+}
+
 async fn root_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
   state.fsm.the_answer.clone()
 }
@@ -123,6 +150,8 @@ async fn main() {
   let app = Router::new()
     .route("/", get(root_handler))
     .route("/add/{a}/{b}", get(add_handler))
+    .route("/delay/{t}/{s}", get(delay_handler))
+    .route("/divisors/{n}", get(divisors_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/quit", get(quit_handler))
     .with_state(app_state.clone());
