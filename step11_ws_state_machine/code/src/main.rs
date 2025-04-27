@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use axum::{
   extract::ws::{Message, WebSocket},
   extract::Path,
@@ -48,52 +47,45 @@ impl OutputWrapper {
   }
 }
 
-#[async_trait]
-trait TaskStateMachine: Send {
-  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64>;
+enum StepResult {
+  Completed,
+  FixedSleep(u64, TaskState),
+  ResumeInstantly(TaskState),
+  WriteAnd(String, Box<TaskState>),
 }
+
+use crate::StepResult::*;
 
 #[derive(Clone)]
-struct DelayedMessageTask {
-  sleep: bool,
-  t: u64,
-  s: String,
+enum TaskState {
+  DelayedMessageTaskBegin(u64, String),
+  DelayedMessageTaskExecute(u64, String),
+  DivisorsTaskBegin(u64),
+  DivisorsTaskIteration(u64, u64),
+  Completed,
 }
 
-#[async_trait]
-impl TaskStateMachine for DelayedMessageTask {
-  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64> {
-    if self.sleep {
-      self.sleep = false;
-      Some(self.t)
-    } else {
-      writer.write(format!("Delayed by {}ms: `{}`.", self.t, self.s)).await;
-      None
+async fn global_step(state: &TaskState) -> StepResult {
+  match state {
+    TaskState::DelayedMessageTaskBegin(sleep_ms, message) => {
+      FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
     }
-  }
-}
-
-#[derive(Clone)]
-struct DivisorsIterationTask {
-  n: u64,
-  i: u64,
-}
-
-#[async_trait]
-impl TaskStateMachine for DivisorsIterationTask {
-  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64> {
-    while self.i > 0 && self.n % self.i != 0 {
-      self.i -= 1
+    TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
+      WriteAnd(format!("Delayed by {}ms: `{}`.", sleep_ms, message), Box::new(TaskState::Completed))
     }
-    if self.i == 0 {
-      writer.write(format!("Done for {}!", self.n)).await;
-      None
-    } else {
-      writer.write(format!("A divisor of {} is {}.", self.n, self.i)).await;
-      let delay_ms = self.i * 10;
-      self.i -= 1;
-      Some(delay_ms)
+    TaskState::DivisorsTaskBegin(n) => ResumeInstantly(TaskState::DivisorsTaskIteration(*n, *n)),
+    TaskState::DivisorsTaskIteration(n, arg_i) => {
+      let mut i = *arg_i;
+      while i > 0 && n % i != 0 {
+        i -= 1
+      }
+      if i == 0 {
+        WriteAnd(format!("Done for {}!", n), Box::new(TaskState::Completed))
+      } else {
+        WriteAnd(format!("A divisor of {} is {}.", n, i), Box::new(TaskState::DivisorsTaskIteration(*n, i - 1)))
+      }
     }
+    TaskState::Completed => Completed,
   }
 }
 
@@ -103,11 +95,11 @@ struct StateMachineAdvancer {
   scheduled_timestamp: Instant,
 
   #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
-  task: Box<dyn TaskStateMachine>,
+  state: TaskState,
 
   #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   writer: Arc<OutputWrapper>,
-  
+
   #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   task_id: u64,
 }
@@ -118,16 +110,16 @@ struct AppState {
 }
 
 impl AppState {
-  async fn schedule<T: TaskStateMachine + 'static>(&self, socket: WebSocket, task: T, task_description: String) {
+  async fn schedule(&self, socket: WebSocket, state: TaskState, task_description: String) {
     let mut fsm = self.fsm.lock().await;
     let task_id = fsm.next_task_id;
     fsm.next_task_id += 1;
-    
+
     fsm.active_tasks.insert(task_id, task_description);
-    
+
     fsm.pending_operations.push(Reverse(StateMachineAdvancer {
       scheduled_timestamp: Instant::now(),
-      task: Box::new(task),
+      state,
       writer: Arc::new(OutputWrapper { socket: Arc::new(Mutex::new(socket)) }),
       task_id,
     }));
@@ -213,7 +205,9 @@ async fn delay_handler(
 }
 
 async fn delay_handler_ws(socket: WebSocket, t: u64, s: String, state: Arc<AppState>) {
-  state.schedule(socket, DelayedMessageTask { t, s: s.clone(), sleep: true }, format!("Delayed by {}ms: `{}`.", t, s)).await;
+  state
+    .schedule(socket, TaskState::DelayedMessageTaskBegin(t, s.clone()), format!("Delayed by {}ms: `{}`.", t, s))
+    .await;
 }
 
 async fn divisors_handler(
@@ -223,7 +217,7 @@ async fn divisors_handler(
 }
 
 async fn divisors_handler_ws(socket: WebSocket, n: u64, state: Arc<AppState>) {
-  state.schedule(socket, DivisorsIterationTask { n: n, i: n }, format!("Divisors of {}", n)).await;
+  state.schedule(socket, TaskState::DivisorsTaskBegin(n), format!("Divisors of {}", n)).await;
 }
 
 async fn root_handler(_state: State<Arc<AppState>>) -> impl IntoResponse {
@@ -235,17 +229,17 @@ async fn state_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse 
     let fsm = state.fsm.lock().await;
     fsm.active_tasks.clone()
   };
-  
+
   let mut response = String::from("Active tasks:\n");
-  
+
   for (id, description) in active_tasks_copy.iter() {
     response.push_str(&format!("Task ID: {}, Description: {}\n", id, description));
   }
-  
+
   if active_tasks_copy.is_empty() {
     response = String::from("No active tasks\n");
   }
-  
+
   response
 }
 
@@ -276,15 +270,26 @@ async fn execute_pending_operations(state: Arc<AppState>) {
 
     if let Some(mut state_machine_advancer) = task_to_execute {
       let original_timestamp = state_machine_advancer.scheduled_timestamp;
-      match state_machine_advancer.task.step(&state_machine_advancer.writer, state_machine_advancer.task_id).await {
-        Some(delay_ms) => {
-          // Re-insert this task back into the queue, after `delay_ms`.
+      match global_step(&state_machine_advancer.state).await {
+        FixedSleep(delay_ms, new_state) => {
+          state_machine_advancer.state = new_state;
           state_machine_advancer.scheduled_timestamp = original_timestamp + Duration::from_millis(delay_ms);
           let mut fsm = state.fsm.lock().await;
           fsm.pending_operations.push(Reverse(state_machine_advancer));
         }
-        None => {
-          // The task is complete, no need to reschedule, drop it.
+        ResumeInstantly(new_state) => {
+          state_machine_advancer.state = new_state;
+          state_machine_advancer.scheduled_timestamp = original_timestamp;
+          let mut fsm = state.fsm.lock().await;
+          fsm.pending_operations.push(Reverse(state_machine_advancer));
+        }
+        WriteAnd(message, next_step) => {
+          state_machine_advancer.writer.write(message).await;
+          state_machine_advancer.state = *next_step;
+          let mut fsm = state.fsm.lock().await;
+          fsm.pending_operations.push(Reverse(state_machine_advancer));
+        }
+        Completed => {
           let mut fsm = state.fsm.lock().await;
           fsm.active_tasks.remove(&state_machine_advancer.task_id);
         }
