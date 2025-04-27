@@ -28,8 +28,9 @@ struct Args {
 }
 
 struct FiniteStateMachine {
-  the_answer: String,
-  pending_operations: Arc<Mutex<BinaryHeap<Reverse<StateMachineAdvancer>>>>,
+  next_task_id: u64,
+  pending_operations: BinaryHeap<Reverse<StateMachineAdvancer>>,
+  active_tasks: std::collections::HashMap<u64, String>,
 }
 
 struct OutputWrapper {
@@ -49,7 +50,7 @@ impl OutputWrapper {
 
 #[async_trait]
 trait TaskStateMachine: Send {
-  async fn step(&mut self, writer: &OutputWrapper) -> Option<u64>;
+  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64>;
 }
 
 #[derive(Clone)]
@@ -61,7 +62,7 @@ struct DelayedMessageTask {
 
 #[async_trait]
 impl TaskStateMachine for DelayedMessageTask {
-  async fn step(&mut self, writer: &OutputWrapper) -> Option<u64> {
+  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64> {
     if self.sleep {
       self.sleep = false;
       Some(self.t)
@@ -80,7 +81,7 @@ struct DivisorsIterationTask {
 
 #[async_trait]
 impl TaskStateMachine for DivisorsIterationTask {
-  async fn step(&mut self, writer: &OutputWrapper) -> Option<u64> {
+  async fn step(&mut self, writer: &OutputWrapper, task_id: u64) -> Option<u64> {
     while self.i > 0 && self.n % self.i != 0 {
       self.i -= 1
     }
@@ -106,20 +107,29 @@ struct StateMachineAdvancer {
 
   #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   writer: Arc<OutputWrapper>,
+  
+  #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
+  task_id: u64,
 }
 
 struct AppState {
-  fsm: FiniteStateMachine,
+  fsm: Arc<Mutex<FiniteStateMachine>>,
   quit_tx: mpsc::Sender<()>,
 }
 
 impl AppState {
-  async fn schedule<T: TaskStateMachine + 'static>(&self, socket: WebSocket, task: T) {
-    self.fsm.pending_operations.lock().await.push(Reverse(StateMachineAdvancer {
+  async fn schedule<T: TaskStateMachine + 'static>(&self, socket: WebSocket, task: T, task_description: String) {
+    let mut fsm = self.fsm.lock().await;
+    let task_id = fsm.next_task_id;
+    fsm.next_task_id += 1;
+    
+    fsm.active_tasks.insert(task_id, task_description);
+    
+    fsm.pending_operations.push(Reverse(StateMachineAdvancer {
       scheduled_timestamp: Instant::now(),
       task: Box::new(task),
-      // NOTE(dkorolev): I'm positive this can be simplified!
       writer: Arc::new(OutputWrapper { socket: Arc::new(Mutex::new(socket)) }),
+      task_id,
     }));
   }
 }
@@ -203,7 +213,7 @@ async fn delay_handler(
 }
 
 async fn delay_handler_ws(socket: WebSocket, t: u64, s: String, state: Arc<AppState>) {
-  state.schedule(socket, DelayedMessageTask { t, s, sleep: true }).await;
+  state.schedule(socket, DelayedMessageTask { t, s: s.clone(), sleep: true }, format!("Delayed by {}ms: `{}`.", t, s)).await;
 }
 
 async fn divisors_handler(
@@ -213,11 +223,30 @@ async fn divisors_handler(
 }
 
 async fn divisors_handler_ws(socket: WebSocket, n: u64, state: Arc<AppState>) {
-  state.schedule(socket, DivisorsIterationTask { n: n, i: n }).await;
+  state.schedule(socket, DivisorsIterationTask { n: n, i: n }, format!("Divisors of {}", n)).await;
 }
 
-async fn root_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-  state.fsm.the_answer.clone()
+async fn root_handler(_state: State<Arc<AppState>>) -> impl IntoResponse {
+  "magic"
+}
+
+async fn state_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+  let active_tasks_copy = {
+    let fsm = state.fsm.lock().await;
+    fsm.active_tasks.clone()
+  };
+  
+  let mut response = String::from("Active tasks:\n");
+  
+  for (id, description) in active_tasks_copy.iter() {
+    response.push_str(&format!("Task ID: {}, Description: {}\n", id, description));
+  }
+  
+  if active_tasks_copy.is_empty() {
+    response = String::from("No active tasks\n");
+  }
+  
+  response
 }
 
 async fn quit_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
@@ -228,30 +257,36 @@ async fn quit_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 async fn execute_pending_operations(state: Arc<AppState>) {
   loop {
     let now = Instant::now();
-
-    let mut task_to_execute = None;
-
-    {
-      let mut pending_operations = state.fsm.pending_operations.lock().await;
-      if let Some(peek) = pending_operations.peek() {
+    let task_to_execute = {
+      let mut fsm = state.fsm.lock().await;
+      if let Some(peek) = fsm.pending_operations.peek() {
         if peek.0.scheduled_timestamp <= now {
-          let scheduled_timestamp = peek.0.scheduled_timestamp;
-          if let Some(Reverse(state_machine_advancer)) = pending_operations.pop() {
-            task_to_execute = Some((scheduled_timestamp, state_machine_advancer));
+          if let Some(Reverse(state_machine_advancer)) = fsm.pending_operations.pop() {
+            Some(state_machine_advancer)
+          } else {
+            None
           }
+        } else {
+          None
         }
+      } else {
+        None
       }
-    }
+    };
 
-    if let Some((timestamp, mut state_machine_advancer)) = task_to_execute {
-      match state_machine_advancer.task.step(&state_machine_advancer.writer).await {
+    if let Some(mut state_machine_advancer) = task_to_execute {
+      let original_timestamp = state_machine_advancer.scheduled_timestamp;
+      match state_machine_advancer.task.step(&state_machine_advancer.writer, state_machine_advancer.task_id).await {
         Some(delay_ms) => {
           // Re-insert this task back into the queue, after `delay_ms`.
-          state_machine_advancer.scheduled_timestamp = timestamp + Duration::from_millis(delay_ms);
-          state.fsm.pending_operations.lock().await.push(Reverse(state_machine_advancer));
+          state_machine_advancer.scheduled_timestamp = original_timestamp + Duration::from_millis(delay_ms);
+          let mut fsm = state.fsm.lock().await;
+          fsm.pending_operations.push(Reverse(state_machine_advancer));
         }
         None => {
           // The task is complete, no need to reschedule, drop it.
+          let mut fsm = state.fsm.lock().await;
+          fsm.active_tasks.remove(&state_machine_advancer.task_id);
         }
       }
     }
@@ -268,10 +303,11 @@ async fn main() {
   let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
   let app_state = Arc::new(AppState {
-    fsm: FiniteStateMachine {
-      the_answer: String::from("magic"),
-      pending_operations: Arc::new(Mutex::new(BinaryHeap::<Reverse<StateMachineAdvancer>>::new())),
-    },
+    fsm: Arc::new(Mutex::new(FiniteStateMachine {
+      next_task_id: 0,
+      pending_operations: BinaryHeap::<Reverse<StateMachineAdvancer>>::new(),
+      active_tasks: std::collections::HashMap::new(),
+    })),
     quit_tx,
   });
 
@@ -281,6 +317,7 @@ async fn main() {
     .route("/delay/{t}/{s}", get(delay_handler))
     .route("/divisors/{n}", get(divisors_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
+    .route("/state", get(state_handler))
     .route("/quit", get(quit_handler))
     .with_state(app_state.clone());
 
