@@ -38,6 +38,23 @@ npm exec -- wscat -c ws://localhost:3000/test_ws
 echo '=== DEBUG 3 ==='
 npm exec -- wscat -c ws://localhost:3000/test_ws | cat
 echo '=== DEBUG 4 ==='
+node -e "
+      const WebSocket = require('ws');
+      const ws = new WebSocket('ws://localhost:3000/test_ws');
+      ws.on('open', () => {
+        ws.send('probe');
+      });
+      ws.on('message', (data) => {
+        console.log('Received:', data.toString());
+        if (!data.toString()) process.exit(1);
+        process.exit(0);
+      });
+      setTimeout(() => {
+        console.error('Timeout');
+        process.exit(1);
+      }, 5000);
+    "
+echo '=== DEBUG 5 ==='
 
 S="$(npm exec -- wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
 G="magic"
