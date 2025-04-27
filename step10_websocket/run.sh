@@ -31,6 +31,10 @@ while true ; do
   echo "server not yet healthy"
 done
 
+echo '=== DEBUG ==='
+npm exec -- wscat -c ws://0.0.0.0:3000/test_ws
+echo '=== DEBUG ==='
+
 S="$(npm exec -- wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
 G="magic"
 
