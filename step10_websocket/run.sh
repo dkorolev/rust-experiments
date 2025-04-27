@@ -12,6 +12,10 @@ set -e
 [ -L code/templates ] && (unlink code/templates && echo 'Symlink of `code/templates` removed.') || echo 'No `code/templates` symlink to remove.'
 [ -d code/templates ] && echo 'The `code/templates` dir exists, using it.' || (cp -r ../lib/templates code/ && echo 'Copied `../lib/templates` into `code/templates`.')
 
+echo '`npm i wscat`.'
+npm i wscat
+echo '`npm i wscat`: success.'
+
 docker build -f ../Dockerfile.template . -t demo
 
 docker run --rm --network=bridge -p 3000:3000 -t demo &
@@ -27,7 +31,7 @@ while true ; do
   echo "server not yet healthy"
 done
 
-S="$(npx wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
+S="$(npm exec -- wscat -c ws://0.0.0.0:3000/test_ws | head -n 1)"
 G="magic"
 
 if [ "$S" != "$G" ] ; then
