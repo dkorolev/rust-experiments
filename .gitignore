@@ -7,6 +7,11 @@ target/
 # Using the `Dockerfile.template` in the root directory now.
 Dockerfile
 
+# Sigh, some `run.sh` scripts do use `npm i`.
+node_modules
+package.json
+package-lock.json
+
 # To make sure all `lib` directories are effectively symlinks to `$REPO_ROOT/lib`.
 # Unless they are explicit copies, since otherwise Docker-based builds would not succeed.
 step*/code/src/lib
