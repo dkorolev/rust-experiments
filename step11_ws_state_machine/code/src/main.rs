@@ -65,7 +65,7 @@ enum TaskState {
   Completed,
 }
 
-async fn global_step(state: &TaskState) -> StepResult {
+fn global_step(state: &TaskState) -> StepResult {
   match state {
     TaskState::DelayedMessageTaskBegin(sleep_ms, message) => {
       FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
@@ -270,7 +270,7 @@ async fn execute_pending_operations(state: Arc<AppState>) {
 
     if let Some(mut state_machine_advancer) = task_to_execute {
       let original_timestamp = state_machine_advancer.scheduled_timestamp;
-      match global_step(&state_machine_advancer.state).await {
+      match global_step(&state_machine_advancer.state) {
         FixedSleep(delay_ms, new_state) => {
           state_machine_advancer.state = new_state;
           state_machine_advancer.scheduled_timestamp = original_timestamp + Duration::from_millis(delay_ms);
