@@ -48,7 +48,9 @@ impl TimerTrait for Timer {
 }
 
 trait WriterTrait: Send + Sync {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+  fn write_text<'a>(
+    &'a self, text: String, timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
 struct WebSocketWriter {
@@ -68,7 +70,9 @@ impl WebSocketWriter {
 }
 
 impl WriterTrait for WebSocketWriter {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+  fn write_text<'a>(
+    &'a self, text: String, _timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
       let mut socket = self.socket.lock().await;
       socket.send(Message::Text(text.into())).await
@@ -86,13 +90,43 @@ enum TaskState {
   Completed,
 }
 
+#[cfg(not(test))]
+fn format_delayed_message(sleep_ms: LogicalTimeMs, message: &str) -> String {
+  format!("Delayed by {sleep_ms}ms: `{message}`.")
+}
+
+#[cfg(not(test))]
+fn format_divisor_found(n: u64, i: u64) -> String {
+  format!("A divisor of {n} is {i}.")
+}
+
+#[cfg(not(test))]
+fn format_divisors_done(n: u64) -> String {
+  format!("Done for {n}!")
+}
+
+#[cfg(test)]
+fn format_delayed_message(_sleep_ms: LogicalTimeMs, message: &str) -> String {
+  message.to_string()
+}
+
+#[cfg(test)]
+fn format_divisor_found(n: u64, i: u64) -> String {
+  format!("{n}%{i}==0")
+}
+
+#[cfg(test)]
+fn format_divisors_done(n: u64) -> String {
+  format!("{n}!")
+}
+
 fn global_step(state: &TaskState) -> StepResult {
   match state {
     TaskState::DelayedMessageTaskBegin(sleep_ms, message) => {
       StepResult::FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
     }
     TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
-      StepResult::WriteAnd(format!("Delayed by {}ms: `{}`.", sleep_ms, message), TaskState::Completed)
+      StepResult::WriteAnd(format_delayed_message(*sleep_ms, message), TaskState::Completed)
     }
     TaskState::DivisorsTaskBegin(n) => StepResult::ResumeInstantly(TaskState::DivisorsTaskIteration(*n, *n)),
     TaskState::DivisorsTaskIteration(n, arg_i) => {
@@ -101,13 +135,13 @@ fn global_step(state: &TaskState) -> StepResult {
         i -= 1
       }
       if i == 0 {
-        StepResult::WriteAnd(format!("Done for {}!", n), TaskState::Completed)
+        StepResult::WriteAnd(format_divisors_done(*n), TaskState::Completed)
       } else {
         StepResult::FixedSleep(i * 10, TaskState::DivisorsPrintAndMoveOn(*n, i))
       }
     }
     TaskState::DivisorsPrintAndMoveOn(n, i) => {
-      StepResult::WriteAnd(format!("A divisor of {} is {}.", n, i), TaskState::DivisorsTaskIteration(*n, i - 1))
+      StepResult::WriteAnd(format_divisor_found(*n, *i), TaskState::DivisorsTaskIteration(*n, i - 1))
     }
     TaskState::Completed => StepResult::Completed,
   }
@@ -228,11 +262,10 @@ fn async_ack(
     let indentation = " ".repeat(indent);
     if m == 0 {
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      let msg = format!("{}ack({m},{n}) = {}", indentation, n + 1);
-      ctx.writer.write_text(msg).await?;
+      ctx.writer.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
       Ok(n + 1)
     } else {
-      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation)).await?;
+      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
@@ -243,7 +276,7 @@ fn async_ack(
       };
 
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation)).await?;
+      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
       Ok(r)
     }
   })
@@ -319,17 +352,17 @@ async fn execute_pending_operations(mut state: Arc<AppState>) {
 
 async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
   loop {
-    let now: LogicalTimeMs = state.timer.millis_since_start();
-    if let Some(task_id) = {
+    let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
+    if let Some((task_id, scheduled_timestamp)) = {
       let mut fsm = state.fsm.lock().await;
       // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
       fsm
         .pending_operations
         .peek()
-        .map(|t| t.scheduled_timestamp <= now)
+        .map(|t| t.scheduled_timestamp <= scheduled_timestamp_cutoff)
         .filter(|b| *b)
         .and_then(|_| fsm.pending_operations.pop())
-        .map(|t| t.task_id)
+        .map(|t| (t.task_id, t.scheduled_timestamp))
     } {
       let task = state
         .fsm
@@ -349,23 +382,23 @@ async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
           let mut fsm = state.fsm.lock().await;
           let task = fsm.active_tasks.get_mut(&task_id).unwrap();
           task.state = new_state;
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: now, task_id });
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
         }
         StepResult::FixedSleep(sleep_ms, new_state) => {
           let mut fsm = state.fsm.lock().await;
-          let scheduled_timestamp = now + sleep_ms;
+          let scheduled_timestamp = scheduled_timestamp + sleep_ms;
           let task = fsm.active_tasks.get_mut(&task_id).unwrap();
           task.state = new_state;
           task.scheduled_timestamp = scheduled_timestamp;
           fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
         }
         StepResult::WriteAnd(text, new_state) => {
-          let _ = task.writer.write_text(text).await;
+          let _ = task.writer.write_text(text, Some(scheduled_timestamp)).await;
           let mut fsm = state.fsm.lock().await;
           if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
             task.state = new_state;
 
-            fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: now, task_id });
+            fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
           }
         }
       }
@@ -420,4 +453,137 @@ async fn main() {
   }
 
   println!("rust ws state machine demo down");
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  struct MockTimer {
+    current_time: Arc<std::sync::Mutex<LogicalTimeMs>>,
+  }
+
+  impl MockTimer {
+    fn new(initial_time: LogicalTimeMs) -> Self {
+      Self { current_time: Arc::new(std::sync::Mutex::new(initial_time)) }
+    }
+
+    fn set_time(&self, time_ms: LogicalTimeMs) {
+      let mut current = self.current_time.lock().unwrap();
+      *current = time_ms;
+    }
+  }
+
+  impl TimerTrait for MockTimer {
+    fn millis_since_start(&self) -> LogicalTimeMs {
+      *self.current_time.lock().unwrap()
+    }
+  }
+
+  struct MockWriter {
+    outputs: Arc<std::sync::Mutex<Vec<String>>>,
+    timer: Arc<dyn TimerTrait>,
+  }
+
+  impl MockWriter {
+    fn new_with_timer(timer: Arc<dyn TimerTrait>) -> Self {
+      Self { outputs: Arc::new(std::sync::Mutex::new(Vec::new())), timer }
+    }
+
+    fn get_outputs_as_string(&self) -> String {
+      self.outputs.lock().unwrap().join(";")
+    }
+
+    fn clear_outputs(&self) {
+      self.outputs.lock().unwrap().clear();
+    }
+  }
+
+  impl Clone for MockWriter {
+    fn clone(&self) -> Self {
+      Self { outputs: self.outputs.clone(), timer: self.timer.clone() }
+    }
+  }
+
+  impl WriterTrait for MockWriter {
+    fn write_text<'a>(
+      &'a self, text: String, timestamp: Option<LogicalTimeMs>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+      Box::pin(async move {
+        let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
+        self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+        Ok(())
+      })
+    }
+  }
+
+  #[tokio::test]
+  async fn test_state_machine_and_execution() {
+    let timer = Arc::new(MockTimer::new(0));
+    let (quit_tx, _) = mpsc::channel::<()>(1);
+    let mut app_state = Arc::new(AppState {
+      fsm: Arc::new(Mutex::new(FiniteStateMachine {
+        next_task_id: 0,
+        pending_operations: Default::default(),
+        active_tasks: Default::default(),
+      })),
+      quit_tx,
+      timer: timer.clone(),
+    });
+    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(12), 0, "Divisors of 12".to_string()).await;
+    app_state
+      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(225, "HI".to_string()), 0, "Hello".to_string())
+      .await;
+    app_state
+      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(75, "BYE".to_string()), 200, "Bye".to_string())
+      .await;
+
+    timer.set_time(225);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected1 = vec!["120ms:12%12==0", "180ms:12%6==0", "220ms:12%4==0", "225ms:HI"].join(";");
+    assert_eq!(expected1, writer.get_outputs_as_string());
+
+    timer.set_time(1000);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected2 = vec![
+      "120ms:12%12==0",
+      "180ms:12%6==0",
+      "220ms:12%4==0",
+      "225ms:HI",
+      "250ms:12%3==0",
+      "270ms:12%2==0",
+      "275ms:BYE",
+      "280ms:12%1==0",
+      "280ms:12!",
+    ]
+    .join(";");
+    assert_eq!(expected2, writer.get_outputs_as_string());
+
+    writer.clear_outputs();
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(8), 10_000, "".to_string()).await;
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(9), 10_001, "".to_string()).await;
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(3), 10_002, "".to_string()).await;
+    timer.set_time(20_000);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected3 = vec![
+      "10032ms:3%3==0",
+      "10042ms:3%1==0",
+      "10042ms:3!",
+      "10080ms:8%8==0",
+      "10091ms:9%9==0",
+      "10120ms:8%4==0",
+      "10121ms:9%3==0",
+      "10131ms:9%1==0",
+      "10131ms:9!",
+      "10140ms:8%2==0",
+      "10150ms:8%1==0",
+      "10150ms:8!",
+    ]
+    .join(";");
+    assert_eq!(expected3, writer.get_outputs_as_string());
+  }
 }
