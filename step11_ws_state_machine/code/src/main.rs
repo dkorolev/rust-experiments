@@ -25,6 +25,10 @@ struct Args {
   port: u16,
 }
 
+trait TimerTrait: Send + Sync {
+  fn millis_since_start(&self) -> u64;
+}
+
 struct Timer {
   start_time: std::time::Instant,
 }
@@ -33,7 +37,9 @@ impl Timer {
   fn new() -> Self {
     Self { start_time: std::time::Instant::now() }
   }
+}
 
+impl TimerTrait for Timer {
   fn millis_since_start(&self) -> u64 {
     self.start_time.elapsed().as_millis() as u64
   }
@@ -136,7 +142,7 @@ impl PartialOrd for StateMachineAdvancer {
 struct AppState {
   fsm: Arc<Mutex<FiniteStateMachine>>,
   quit_tx: mpsc::Sender<()>,
-  timer: Arc<Timer>,
+  timer: Arc<dyn TimerTrait>,
 }
 
 impl AppState {
@@ -334,7 +340,7 @@ async fn execute_pending_operations(state: Arc<AppState>) {
 #[tokio::main]
 async fn main() {
   let args = Args::parse();
-  let timer = Arc::new(Timer::new());
+  let timer: Arc<dyn TimerTrait> = Arc::new(Timer::new());
   let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
   let app_state = Arc::new(AppState {
@@ -344,7 +350,7 @@ async fn main() {
       active_tasks: std::collections::HashMap::new(),
     })),
     quit_tx,
-    timer: timer.clone(),
+    timer,
   });
 
   let app = Router::new()
