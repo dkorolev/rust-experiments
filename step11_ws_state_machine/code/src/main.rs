@@ -81,12 +81,44 @@ impl WriterTrait for WebSocketWriter {
 }
 
 #[derive(Clone, Debug)]
+struct FibonacciBeginParams {
+  n: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FibonacciCalculateParams {
+  n: u64,
+  index: u64,
+  a: u64,
+  b: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FibonacciResultParams {
+  n: u64,
+  result: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DelayedFibonacciStepParams {
+  delay_ms: LogicalTimeMs,
+  n: u64,
+  next_index: u64,
+  a: u64,
+  b: u64,
+}
+
+#[derive(Clone, Debug)]
 enum TaskState {
   DelayedMessageTaskBegin(LogicalTimeMs, String),
   DelayedMessageTaskExecute(LogicalTimeMs, String),
   DivisorsTaskBegin(u64),
   DivisorsTaskIteration(u64, u64),
   DivisorsPrintAndMoveOn(u64, u64),
+  FibonacciTaskBegin(FibonacciBeginParams),
+  FibonacciTaskCalculate(FibonacciCalculateParams),
+  FibonacciTaskResult(FibonacciResultParams),
+  DelayedFibonacciStep(DelayedFibonacciStepParams),
   Completed,
 }
 
@@ -105,6 +137,16 @@ fn format_divisors_done(n: u64) -> String {
   format!("Done for {n}!")
 }
 
+#[cfg(not(test))]
+fn format_fibonacci_step(n: u64, index: u64, a: u64, _b: u64) -> String {
+  format!("Fibonacci({index}) for {n} iterations: {a}.")
+}
+
+#[cfg(not(test))]
+fn format_fibonacci_result(n: u64, result: u64) -> String {
+  format!("Fibonacci({n}) = {result}.")
+}
+
 #[cfg(test)]
 fn format_delayed_message(_sleep_ms: LogicalTimeMs, message: &str) -> String {
   message.to_string()
@@ -118,6 +160,16 @@ fn format_divisor_found(n: u64, i: u64) -> String {
 #[cfg(test)]
 fn format_divisors_done(n: u64) -> String {
   format!("{n}!")
+}
+
+#[cfg(test)]
+fn format_fibonacci_step(n: u64, index: u64, a: u64, _b: u64) -> String {
+  format!("fib{index}[{n}]={a}")
+}
+
+#[cfg(test)]
+fn format_fibonacci_result(n: u64, result: u64) -> String {
+  format!("fib{n}={result}")
 }
 
 fn global_step(state: &TaskState) -> StepResult {
@@ -142,6 +194,49 @@ fn global_step(state: &TaskState) -> StepResult {
     }
     TaskState::DivisorsPrintAndMoveOn(n, i) => {
       StepResult::WriteAnd(format_divisor_found(*n, *i), TaskState::DivisorsTaskIteration(*n, i - 1))
+    }
+    TaskState::FibonacciTaskBegin(FibonacciBeginParams { n }) => {
+      if *n <= 1 {
+        StepResult::WriteAnd(format_fibonacci_result(*n, *n), TaskState::Completed)
+      } else {
+        StepResult::ResumeInstantly(TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
+          n: *n, 
+          index: 1, 
+          a: 0, 
+          b: 1 
+        }))
+      }
+    }
+    TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { n, index, a, b }) => {
+      if *index >= *n {
+        StepResult::ResumeInstantly(TaskState::FibonacciTaskResult(FibonacciResultParams { n: *n, result: *b }))
+      } else {
+        let delay = 5 * index;
+        StepResult::WriteAnd(
+          format_fibonacci_step(*n, *index, *b, *a),
+          TaskState::DelayedFibonacciStep(DelayedFibonacciStepParams { 
+            delay_ms: delay, 
+            n: *n, 
+            next_index: *index + 1, 
+            a: *b, 
+            b: *a + *b 
+          }),
+        )
+      }
+    }
+    TaskState::DelayedFibonacciStep(params) => {
+      StepResult::FixedSleep(
+        params.delay_ms, 
+        TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
+          n: params.n, 
+          index: params.next_index, 
+          a: params.a, 
+          b: params.b 
+        })
+      )
+    }
+    TaskState::FibonacciTaskResult(FibonacciResultParams { n, result }) => {
+      StepResult::WriteAnd(format_fibonacci_result(*n, *result), TaskState::Completed)
     }
     TaskState::Completed => StepResult::Completed,
   }
@@ -316,6 +411,23 @@ async fn divisors_handler_ws(socket: WebSocket, ts: LogicalTimeMs, n: u64, state
     .await;
 }
 
+async fn fibonacci_handler(
+  ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
+}
+
+async fn fibonacci_handler_ws(socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState>) {
+  state
+    .schedule(
+      Arc::new(WebSocketWriter::new(socket)),
+      TaskState::FibonacciTaskBegin(FibonacciBeginParams { n }),
+      ts,
+      format!("Fibonacci number {n}"),
+    )
+    .await;
+}
+
 async fn root_handler(_state: State<Arc<AppState>>) -> impl IntoResponse {
   "magic"
 }
@@ -429,6 +541,7 @@ async fn main() {
     .route("/add/{a}/{b}", get(add_handler))
     .route("/delay/{t}/{s}", get(delay_handler))
     .route("/divisors/{n}", get(divisors_handler))
+    .route("/fibonacci/{n}", get(fibonacci_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/state", get(state_handler))
     .route("/quit", get(quit_handler))
@@ -585,5 +698,45 @@ mod tests {
     ]
     .join(";");
     assert_eq!(expected3, writer.get_outputs_as_string());
+  }
+
+  #[tokio::test]
+  async fn test_fibonacci_task() {
+    let timer = Arc::new(MockTimer::new(0));
+    let (quit_tx, _) = mpsc::channel::<()>(1);
+    let mut app_state = Arc::new(AppState {
+      fsm: Arc::new(Mutex::new(FiniteStateMachine {
+        next_task_id: 0,
+        pending_operations: Default::default(),
+        active_tasks: Default::default(),
+      })),
+      quit_tx,
+      timer: timer.clone(),
+    });
+    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+
+    app_state.schedule(writer.clone(), TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }), 0, "The fifth Fibonacci number".to_string()).await;
+    
+    timer.set_time(4);
+    execute_pending_operations_inner(&mut app_state).await;
+    assert_eq!("0ms:fib1[5]=1", writer.get_outputs_as_string());
+    
+    timer.set_time(10);
+    execute_pending_operations_inner(&mut app_state).await;
+    
+    assert_eq!("0ms:fib1[5]=1;5ms:fib2[5]=1", writer.get_outputs_as_string());
+    
+    timer.set_time(100);
+    execute_pending_operations_inner(&mut app_state).await;
+    
+    let expected = vec![
+      "0ms:fib1[5]=1",
+      "5ms:fib2[5]=1", 
+      "15ms:fib3[5]=2",
+      "30ms:fib4[5]=3", 
+      "50ms:fib5=5"
+    ].join(";");
+    
+    assert_eq!(expected, writer.get_outputs_as_string());
   }
 }
