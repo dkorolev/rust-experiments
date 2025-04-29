@@ -464,9 +464,9 @@ async fn execute_pending_operations(mut state: Arc<AppState>) {
 
 async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
   loop {
+    let mut fsm = state.fsm.lock().await;
     let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
     if let Some((task_id, scheduled_timestamp)) = {
-      let mut fsm = state.fsm.lock().await;
       // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
       fsm
         .pending_operations
@@ -476,10 +476,7 @@ async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
         .and_then(|_| fsm.pending_operations.pop())
         .map(|t| (t.task_id, t.scheduled_timestamp))
     } {
-      let task = state
-        .fsm
-        .lock()
-        .await
+      let task = fsm
         .active_tasks
         .get(&task_id)
         .cloned()
@@ -487,17 +484,14 @@ async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
 
       match global_step(&task.state) {
         StepResult::Completed => {
-          let mut fsm = state.fsm.lock().await;
           fsm.active_tasks.remove(&task_id);
         }
         StepResult::ResumeInstantly(new_state) => {
-          let mut fsm = state.fsm.lock().await;
           let task = fsm.active_tasks.get_mut(&task_id).unwrap();
           task.state = new_state;
           fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
         }
         StepResult::FixedSleep(sleep_ms, new_state) => {
-          let mut fsm = state.fsm.lock().await;
           let scheduled_timestamp = scheduled_timestamp + sleep_ms;
           let task = fsm.active_tasks.get_mut(&task_id).unwrap();
           task.state = new_state;
@@ -506,10 +500,8 @@ async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
         }
         StepResult::WriteAnd(text, new_state) => {
           let _ = task.writer.write_text(text, Some(scheduled_timestamp)).await;
-          let mut fsm = state.fsm.lock().await;
           if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
             task.state = new_state;
-
             fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
           }
         }
