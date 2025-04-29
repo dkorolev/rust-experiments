@@ -129,7 +129,7 @@ impl AppState {
 
     fsm.active_tasks.insert(
       task_id,
-      FiniteStateMachineTask { description: task_description, state: state, scheduled_timestamp, writer },
+      FiniteStateMachineTask { description: task_description, state, scheduled_timestamp, writer },
     );
 
     fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
