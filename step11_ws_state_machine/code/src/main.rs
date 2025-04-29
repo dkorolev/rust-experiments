@@ -305,16 +305,16 @@ async fn quit_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
   "TY\n"
 }
 
-async fn execute_pending_operations(state: Arc<AppState>) {
+async fn execute_pending_operations(mut state: Arc<AppState>) {
   loop {
-    execute_pending_operations_inner(state.clone()).await;
+    state = execute_pending_operations_inner(state).await;
 
     // NOTE(dkorolev): I will eventually rewrite this w/o busy waiting.
     tokio::time::sleep(Duration::from_millis(10)).await;
   }
 }
 
-async fn execute_pending_operations_inner(state: Arc<AppState>) {
+async fn execute_pending_operations_inner(state: Arc<AppState>) -> Arc<AppState> {
   loop {
     let now: LogicalTimeMs = state.timer.millis_since_start();
     let task_id_to_execute = {
@@ -390,7 +390,7 @@ async fn execute_pending_operations_inner(state: Arc<AppState>) {
         }
       }
     } else if state.fsm.lock().await.pending_operations.is_empty() {
-      break;
+      break state;
     }
   }
 }
