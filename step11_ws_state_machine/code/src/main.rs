@@ -4,7 +4,7 @@ use axum::{
   extract::{State, WebSocketUpgrade},
   response::IntoResponse,
   routing::get,
-  serve, Router,
+  serve, Error, Router,
 };
 use clap::Parser;
 use std::cmp::Ordering;
@@ -48,7 +48,7 @@ impl TimerTrait for Timer {
 }
 
 trait WriterTrait: Send + Sync {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
 struct WebSocketWriter {
@@ -68,10 +68,10 @@ impl WebSocketWriter {
 }
 
 impl WriterTrait for WebSocketWriter {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
       let mut socket = self.socket.lock().await;
-      let _ = socket.send(Message::Text(text.into())).await;
+      socket.send(Message::Text(text.into())).await
     })
   }
 }
@@ -221,26 +221,30 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack(ctx: AckermannContext, m: i64, n: i64, indent: usize) -> Pin<Box<dyn Future<Output = i64> + Send>> {
+fn async_ack(
+  ctx: AckermannContext, m: i64, n: i64, indent: usize,
+) -> Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>> {
   Box::pin(async move {
     let indentation = " ".repeat(indent);
     if m == 0 {
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
       let msg = format!("{}ack({m},{n}) = {}", indentation, n + 1);
-      ctx.writer.write_text(msg).await;
-      n + 1
+      ctx.writer.write_text(msg).await?;
+      Ok(n + 1)
     } else {
-      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation)).await;
+      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation)).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
-        (m, 0) => async_ack(ctx.clone(), m - 1, 1, indent + 2).await,
-        (m, n) => async_ack(ctx.clone(), m - 1, async_ack(ctx.clone(), m, n - 1, indent + 2).await, indent + 2).await,
+        (m, 0) => async_ack(ctx.clone(), m - 1, 1, indent + 2).await?,
+        (m, n) => {
+          async_ack(ctx.clone(), m - 1, async_ack(ctx.clone(), m, n - 1, indent + 2).await?, indent + 2).await?
+        }
       };
 
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation)).await;
-      r
+      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation)).await?;
+      Ok(r)
     }
   })
 }
@@ -316,79 +320,70 @@ async fn execute_pending_operations(mut state: Arc<AppState>) {
 async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
   loop {
     let now: LogicalTimeMs = state.timer.millis_since_start();
-    let task_id_to_execute = {
+    if let Some(task_id) = {
       let mut fsm = state.fsm.lock().await;
-      if let Some(peek) = fsm.pending_operations.peek() {
-        if peek.scheduled_timestamp <= now {
-          if let Some(task_with_timestamp) = fsm.pending_operations.pop() {
-            Some(task_with_timestamp.task_id)
-          } else {
-            None
-          }
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    };
+      // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
+      fsm
+        .pending_operations
+        .peek()
+        .map(|t| t.scheduled_timestamp <= now)
+        .filter(|b| *b)
+        .and_then(|_| fsm.pending_operations.pop())
+        .map(|t| t.task_id)
+    } {
+      let task = state
+        .fsm
+        .lock()
+        .await
+        .active_tasks
+        .get(&task_id)
+        .cloned()
+        .expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-    if let Some(task_id) = task_id_to_execute {
-      let task_info = {
-        let fsm = state.fsm.lock().await;
-        if let Some(task) = fsm.active_tasks.get(&task_id) {
-          (task.state.clone(), task.scheduled_timestamp)
-        } else {
-          continue;
-        }
-      };
-
-      let (task_state, original_timestamp) = task_info;
-
-      match global_step(&task_state) {
+      match global_step(&task.state) {
         StepResult::FixedSleep(delay_ms, new_state) => {
+          let scheduled_timestamp = task.scheduled_timestamp + delay_ms;
           let mut fsm = state.fsm.lock().await;
 
           if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
             task.state = new_state;
-            task.scheduled_timestamp = original_timestamp + delay_ms;
+            task.scheduled_timestamp = scheduled_timestamp;
           }
 
-          fsm
-            .pending_operations
-            .push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp + delay_ms, task_id });
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
         }
         StepResult::ResumeInstantly(new_state) => {
+          let scheduled_timestamp = task.scheduled_timestamp;
           let mut fsm = state.fsm.lock().await;
 
           if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
             task.state = new_state;
           }
 
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp, task_id });
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
         }
         StepResult::WriteAnd(message, next_step) => {
-          {
-            let fsm = state.fsm.lock().await;
-            if let Some(task) = fsm.active_tasks.get(&task_id) {
-              task.writer.write_text(message).await;
+          let task_writer = task.writer.clone();
+
+          if task_writer.write_text(message).await.is_ok() {
+            let mut fsm = state.fsm.lock().await;
+
+            if let Some(mut_task) = fsm.active_tasks.get_mut(&task_id) {
+              mut_task.state = next_step;
+              let scheduled_timestamp = mut_task.scheduled_timestamp;
+              fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
             }
+          } else {
+            // No WebSocket to send the result to, so declare the task done for now.
+            state.fsm.lock().await.active_tasks.remove(&task_id);
           }
-
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = next_step;
-          }
-
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp, task_id });
         }
         StepResult::Completed => {
           let mut fsm = state.fsm.lock().await;
           fsm.active_tasks.remove(&task_id);
         }
       }
-    } else if state.fsm.lock().await.pending_operations.is_empty() {
+    } else {
       break;
     }
   }
