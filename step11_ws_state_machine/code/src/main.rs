@@ -13,7 +13,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::{
   net::TcpListener,
   sync::{mpsc, Mutex},
@@ -23,6 +23,20 @@ use tokio::{
 struct Args {
   #[arg(long, default_value = "3000")]
   port: u16,
+}
+
+struct Timer {
+  start_time: std::time::Instant,
+}
+
+impl Timer {
+  fn new() -> Self {
+    Self { start_time: std::time::Instant::now() }
+  }
+
+  fn millis_since_start(&self) -> u64 {
+    self.start_time.elapsed().as_millis() as u64
+  }
 }
 
 struct FiniteStateMachine {
@@ -92,7 +106,7 @@ fn global_step(state: &TaskState) -> StepResult {
   }
 }
 struct StateMachineAdvancer {
-  scheduled_timestamp: Instant,
+  scheduled_timestamp: u64,
   state: TaskState,
   writer: Arc<OutputWrapper>,
   task_id: u64,
@@ -122,6 +136,7 @@ impl PartialOrd for StateMachineAdvancer {
 struct AppState {
   fsm: Arc<Mutex<FiniteStateMachine>>,
   quit_tx: mpsc::Sender<()>,
+  timer: Arc<Timer>,
 }
 
 impl AppState {
@@ -133,7 +148,7 @@ impl AppState {
     fsm.active_tasks.insert(task_id, task_description);
 
     fsm.pending_operations.push(StateMachineAdvancer {
-      scheduled_timestamp: Instant::now(),
+      scheduled_timestamp: self.timer.millis_since_start(),
       state,
       writer: Arc::new(OutputWrapper { socket: Arc::new(Mutex::new(socket)) }),
       task_id,
@@ -265,7 +280,7 @@ async fn quit_handler(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 
 async fn execute_pending_operations(state: Arc<AppState>) {
   loop {
-    let now = Instant::now();
+    let now = state.timer.millis_since_start();
     let task_to_execute = {
       let mut fsm = state.fsm.lock().await;
       if let Some(peek) = fsm.pending_operations.peek() {
@@ -288,7 +303,7 @@ async fn execute_pending_operations(state: Arc<AppState>) {
       match global_step(&state_machine_advancer.state) {
         FixedSleep(delay_ms, new_state) => {
           state_machine_advancer.state = new_state;
-          state_machine_advancer.scheduled_timestamp = original_timestamp + Duration::from_millis(delay_ms);
+          state_machine_advancer.scheduled_timestamp = original_timestamp + delay_ms;
           let mut fsm = state.fsm.lock().await;
           fsm.pending_operations.push(state_machine_advancer);
         }
@@ -319,7 +334,7 @@ async fn execute_pending_operations(state: Arc<AppState>) {
 #[tokio::main]
 async fn main() {
   let args = Args::parse();
-
+  let timer = Arc::new(Timer::new());
   let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
   let app_state = Arc::new(AppState {
@@ -329,6 +344,7 @@ async fn main() {
       active_tasks: std::collections::HashMap::new(),
     })),
     quit_tx,
+    timer: timer.clone(),
   });
 
   let app = Router::new()
