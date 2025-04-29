@@ -7,8 +7,7 @@ use axum::{
   serve, Router,
 };
 use clap::Parser;
-use derivative::Derivative;
-use std::cmp::Reverse;
+use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -28,7 +27,7 @@ struct Args {
 
 struct FiniteStateMachine {
   next_task_id: u64,
-  pending_operations: BinaryHeap<Reverse<StateMachineAdvancer>>,
+  pending_operations: BinaryHeap<StateMachineAdvancer>,
   active_tasks: std::collections::HashMap<u64, String>,
 }
 
@@ -62,6 +61,7 @@ enum TaskState {
   DelayedMessageTaskExecute(u64, String),
   DivisorsTaskBegin(u64),
   DivisorsTaskIteration(u64, u64),
+  DivisorsPrintAndMoveOn(u64, u64),
   Completed,
 }
 
@@ -82,26 +82,41 @@ fn global_step(state: &TaskState) -> StepResult {
       if i == 0 {
         WriteAnd(format!("Done for {}!", n), TaskState::Completed)
       } else {
-        WriteAnd(format!("A divisor of {} is {}.", n, i), TaskState::DivisorsTaskIteration(*n, i - 1))
+        FixedSleep(i * 10, TaskState::DivisorsPrintAndMoveOn(*n, i))
       }
+    }
+    TaskState::DivisorsPrintAndMoveOn(n, i) => {
+      WriteAnd(format!("A divisor of {} is {}.", n, i), TaskState::DivisorsTaskIteration(*n, i - 1))
     }
     TaskState::Completed => Completed,
   }
 }
-
-#[derive(Derivative)]
-#[derivative(PartialEq, Eq, PartialOrd, Ord)]
 struct StateMachineAdvancer {
   scheduled_timestamp: Instant,
-
-  #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   state: TaskState,
-
-  #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   writer: Arc<OutputWrapper>,
-
-  #[derivative(PartialEq = "ignore", PartialOrd = "ignore", Ord = "ignore")]
   task_id: u64,
+}
+
+impl Eq for StateMachineAdvancer {}
+
+impl PartialEq for StateMachineAdvancer {
+  fn eq(&self, other: &Self) -> bool {
+    self.scheduled_timestamp == other.scheduled_timestamp
+  }
+}
+
+impl Ord for StateMachineAdvancer {
+  fn cmp(&self, other: &Self) -> Ordering {
+    // Reversed order by design.
+    other.scheduled_timestamp.cmp(&self.scheduled_timestamp)
+  }
+}
+
+impl PartialOrd for StateMachineAdvancer {
+  fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+    Some(self.cmp(other))
+  }
 }
 
 struct AppState {
@@ -117,12 +132,12 @@ impl AppState {
 
     fsm.active_tasks.insert(task_id, task_description);
 
-    fsm.pending_operations.push(Reverse(StateMachineAdvancer {
+    fsm.pending_operations.push(StateMachineAdvancer {
       scheduled_timestamp: Instant::now(),
       state,
       writer: Arc::new(OutputWrapper { socket: Arc::new(Mutex::new(socket)) }),
       task_id,
-    }));
+    });
   }
 }
 
@@ -254,8 +269,8 @@ async fn execute_pending_operations(state: Arc<AppState>) {
     let task_to_execute = {
       let mut fsm = state.fsm.lock().await;
       if let Some(peek) = fsm.pending_operations.peek() {
-        if peek.0.scheduled_timestamp <= now {
-          if let Some(Reverse(state_machine_advancer)) = fsm.pending_operations.pop() {
+        if peek.scheduled_timestamp <= now {
+          if let Some(state_machine_advancer) = fsm.pending_operations.pop() {
             Some(state_machine_advancer)
           } else {
             None
@@ -275,19 +290,19 @@ async fn execute_pending_operations(state: Arc<AppState>) {
           state_machine_advancer.state = new_state;
           state_machine_advancer.scheduled_timestamp = original_timestamp + Duration::from_millis(delay_ms);
           let mut fsm = state.fsm.lock().await;
-          fsm.pending_operations.push(Reverse(state_machine_advancer));
+          fsm.pending_operations.push(state_machine_advancer);
         }
         ResumeInstantly(new_state) => {
           state_machine_advancer.state = new_state;
           state_machine_advancer.scheduled_timestamp = original_timestamp;
           let mut fsm = state.fsm.lock().await;
-          fsm.pending_operations.push(Reverse(state_machine_advancer));
+          fsm.pending_operations.push(state_machine_advancer);
         }
         WriteAnd(message, next_step) => {
           state_machine_advancer.writer.write(message).await;
           state_machine_advancer.state = next_step;
           let mut fsm = state.fsm.lock().await;
-          fsm.pending_operations.push(Reverse(state_machine_advancer));
+          fsm.pending_operations.push(state_machine_advancer);
         }
         Completed => {
           let mut fsm = state.fsm.lock().await;
@@ -310,7 +325,7 @@ async fn main() {
   let app_state = Arc::new(AppState {
     fsm: Arc::new(Mutex::new(FiniteStateMachine {
       next_task_id: 0,
-      pending_operations: BinaryHeap::<Reverse<StateMachineAdvancer>>::new(),
+      pending_operations: BinaryHeap::<StateMachineAdvancer>::new(),
       active_tasks: std::collections::HashMap::new(),
     })),
     quit_tx,
