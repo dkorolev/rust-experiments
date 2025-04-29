@@ -341,46 +341,32 @@ async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
         .expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
       match global_step(&task.state) {
-        StepResult::FixedSleep(delay_ms, new_state) => {
-          let scheduled_timestamp = task.scheduled_timestamp + delay_ms;
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = new_state;
-            task.scheduled_timestamp = scheduled_timestamp;
-          }
-
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
-        }
-        StepResult::ResumeInstantly(new_state) => {
-          let scheduled_timestamp = task.scheduled_timestamp;
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = new_state;
-          }
-
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
-        }
-        StepResult::WriteAnd(message, next_step) => {
-          let task_writer = task.writer.clone();
-
-          if task_writer.write_text(message).await.is_ok() {
-            let mut fsm = state.fsm.lock().await;
-
-            if let Some(mut_task) = fsm.active_tasks.get_mut(&task_id) {
-              mut_task.state = next_step;
-              let scheduled_timestamp = mut_task.scheduled_timestamp;
-              fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
-            }
-          } else {
-            // No WebSocket to send the result to, so declare the task done for now.
-            state.fsm.lock().await.active_tasks.remove(&task_id);
-          }
-        }
         StepResult::Completed => {
           let mut fsm = state.fsm.lock().await;
           fsm.active_tasks.remove(&task_id);
+        }
+        StepResult::ResumeInstantly(new_state) => {
+          let mut fsm = state.fsm.lock().await;
+          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          task.state = new_state;
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: now, task_id });
+        }
+        StepResult::FixedSleep(sleep_ms, new_state) => {
+          let mut fsm = state.fsm.lock().await;
+          let scheduled_timestamp = now + sleep_ms;
+          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          task.state = new_state;
+          task.scheduled_timestamp = scheduled_timestamp;
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+        }
+        StepResult::WriteAnd(text, new_state) => {
+          let _ = task.writer.write_text(text).await;
+          let mut fsm = state.fsm.lock().await;
+          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
+            task.state = new_state;
+
+            fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: now, task_id });
+          }
         }
       }
     } else {
