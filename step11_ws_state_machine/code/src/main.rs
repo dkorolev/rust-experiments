@@ -127,10 +127,9 @@ impl AppState {
     let task_id = fsm.next_task_id;
     fsm.next_task_id += 1;
 
-    fsm.active_tasks.insert(
-      task_id,
-      FiniteStateMachineTask { description: task_description, state, scheduled_timestamp, writer },
-    );
+    fsm
+      .active_tasks
+      .insert(task_id, FiniteStateMachineTask { description: task_description, state, scheduled_timestamp, writer });
 
     fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
   }
