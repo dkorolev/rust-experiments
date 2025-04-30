@@ -4,7 +4,7 @@ use axum::{
   extract::{State, WebSocketUpgrade},
   response::IntoResponse,
   routing::get,
-  serve, Router,
+  serve, Error, Router,
 };
 use clap::Parser;
 use std::cmp::Ordering;
@@ -48,7 +48,9 @@ impl TimerTrait for Timer {
 }
 
 trait WriterTrait: Send + Sync {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+  fn write_text<'a>(
+    &'a self, text: String, timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
 struct WebSocketWriter {
@@ -68,12 +70,42 @@ impl WebSocketWriter {
 }
 
 impl WriterTrait for WebSocketWriter {
-  fn write_text<'a>(&'a self, text: String) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+  fn write_text<'a>(
+    &'a self, text: String, _timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
     Box::pin(async move {
       let mut socket = self.socket.lock().await;
-      let _ = socket.send(Message::Text(text.into())).await;
+      socket.send(Message::Text(text.into())).await
     })
   }
+}
+
+#[derive(Clone, Debug)]
+struct FibonacciBeginParams {
+  n: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FibonacciCalculateParams {
+  n: u64,
+  index: u64,
+  a: u64,
+  b: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FibonacciResultParams {
+  n: u64,
+  result: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DelayedFibonacciStepParams {
+  delay_ms: LogicalTimeMs,
+  n: u64,
+  next_index: u64,
+  a: u64,
+  b: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -83,7 +115,61 @@ enum TaskState {
   DivisorsTaskBegin(u64),
   DivisorsTaskIteration(u64, u64),
   DivisorsPrintAndMoveOn(u64, u64),
+  FibonacciTaskBegin(FibonacciBeginParams),
+  FibonacciTaskCalculate(FibonacciCalculateParams),
+  FibonacciTaskResult(FibonacciResultParams),
+  DelayedFibonacciStep(DelayedFibonacciStepParams),
   Completed,
+}
+
+#[cfg(not(test))]
+fn format_delayed_message(sleep_ms: LogicalTimeMs, message: &str) -> String {
+  format!("Delayed by {sleep_ms}ms: `{message}`.")
+}
+
+#[cfg(not(test))]
+fn format_divisor_found(n: u64, i: u64) -> String {
+  format!("A divisor of {n} is {i}.")
+}
+
+#[cfg(not(test))]
+fn format_divisors_done(n: u64) -> String {
+  format!("Done for {n}!")
+}
+
+#[cfg(not(test))]
+fn format_fibonacci_step(n: u64, index: u64, a: u64, _b: u64) -> String {
+  format!("Fibonacci({index}) for {n} iterations: {a}.")
+}
+
+#[cfg(not(test))]
+fn format_fibonacci_result(n: u64, result: u64) -> String {
+  format!("Fibonacci({n}) = {result}.")
+}
+
+#[cfg(test)]
+fn format_delayed_message(_sleep_ms: LogicalTimeMs, message: &str) -> String {
+  message.to_string()
+}
+
+#[cfg(test)]
+fn format_divisor_found(n: u64, i: u64) -> String {
+  format!("{n}%{i}==0")
+}
+
+#[cfg(test)]
+fn format_divisors_done(n: u64) -> String {
+  format!("{n}!")
+}
+
+#[cfg(test)]
+fn format_fibonacci_step(n: u64, index: u64, a: u64, _b: u64) -> String {
+  format!("fib{index}[{n}]={a}")
+}
+
+#[cfg(test)]
+fn format_fibonacci_result(n: u64, result: u64) -> String {
+  format!("fib{n}={result}")
 }
 
 fn global_step(state: &TaskState) -> StepResult {
@@ -92,7 +178,7 @@ fn global_step(state: &TaskState) -> StepResult {
       StepResult::FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
     }
     TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
-      StepResult::WriteAnd(format!("Delayed by {}ms: `{}`.", sleep_ms, message), TaskState::Completed)
+      StepResult::WriteAnd(format_delayed_message(*sleep_ms, message), TaskState::Completed)
     }
     TaskState::DivisorsTaskBegin(n) => StepResult::ResumeInstantly(TaskState::DivisorsTaskIteration(*n, *n)),
     TaskState::DivisorsTaskIteration(n, arg_i) => {
@@ -101,13 +187,56 @@ fn global_step(state: &TaskState) -> StepResult {
         i -= 1
       }
       if i == 0 {
-        StepResult::WriteAnd(format!("Done for {}!", n), TaskState::Completed)
+        StepResult::WriteAnd(format_divisors_done(*n), TaskState::Completed)
       } else {
         StepResult::FixedSleep(i * 10, TaskState::DivisorsPrintAndMoveOn(*n, i))
       }
     }
     TaskState::DivisorsPrintAndMoveOn(n, i) => {
-      StepResult::WriteAnd(format!("A divisor of {} is {}.", n, i), TaskState::DivisorsTaskIteration(*n, i - 1))
+      StepResult::WriteAnd(format_divisor_found(*n, *i), TaskState::DivisorsTaskIteration(*n, i - 1))
+    }
+    TaskState::FibonacciTaskBegin(FibonacciBeginParams { n }) => {
+      if *n <= 1 {
+        StepResult::WriteAnd(format_fibonacci_result(*n, *n), TaskState::Completed)
+      } else {
+        StepResult::ResumeInstantly(TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
+          n: *n, 
+          index: 1, 
+          a: 0, 
+          b: 1 
+        }))
+      }
+    }
+    TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { n, index, a, b }) => {
+      if *index >= *n {
+        StepResult::ResumeInstantly(TaskState::FibonacciTaskResult(FibonacciResultParams { n: *n, result: *b }))
+      } else {
+        let delay = 5 * index;
+        StepResult::WriteAnd(
+          format_fibonacci_step(*n, *index, *b, *a),
+          TaskState::DelayedFibonacciStep(DelayedFibonacciStepParams { 
+            delay_ms: delay, 
+            n: *n, 
+            next_index: *index + 1, 
+            a: *b, 
+            b: *a + *b 
+          }),
+        )
+      }
+    }
+    TaskState::DelayedFibonacciStep(params) => {
+      StepResult::FixedSleep(
+        params.delay_ms, 
+        TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
+          n: params.n, 
+          index: params.next_index, 
+          a: params.a, 
+          b: params.b 
+        })
+      )
+    }
+    TaskState::FibonacciTaskResult(FibonacciResultParams { n, result }) => {
+      StepResult::WriteAnd(format_fibonacci_result(*n, *result), TaskState::Completed)
     }
     TaskState::Completed => StepResult::Completed,
   }
@@ -127,10 +256,9 @@ impl AppState {
     let task_id = fsm.next_task_id;
     fsm.next_task_id += 1;
 
-    fsm.active_tasks.insert(
-      task_id,
-      FiniteStateMachineTask { description: task_description, state, scheduled_timestamp, writer },
-    );
+    fsm
+      .active_tasks
+      .insert(task_id, FiniteStateMachineTask { description: task_description, state, scheduled_timestamp, writer });
 
     fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
   }
@@ -222,26 +350,29 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack(ctx: AckermannContext, m: i64, n: i64, indent: usize) -> Pin<Box<dyn Future<Output = i64> + Send>> {
+fn async_ack(
+  ctx: AckermannContext, m: i64, n: i64, indent: usize,
+) -> Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>> {
   Box::pin(async move {
     let indentation = " ".repeat(indent);
     if m == 0 {
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      let msg = format!("{}ack({m},{n}) = {}", indentation, n + 1);
-      ctx.writer.write_text(msg).await;
-      n + 1
+      ctx.writer.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
+      Ok(n + 1)
     } else {
-      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation)).await;
+      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
-        (m, 0) => async_ack(ctx.clone(), m - 1, 1, indent + 2).await,
-        (m, n) => async_ack(ctx.clone(), m - 1, async_ack(ctx.clone(), m, n - 1, indent + 2).await, indent + 2).await,
+        (m, 0) => async_ack(ctx.clone(), m - 1, 1, indent + 2).await?,
+        (m, n) => {
+          async_ack(ctx.clone(), m - 1, async_ack(ctx.clone(), m, n - 1, indent + 2).await?, indent + 2).await?
+        }
       };
 
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation)).await;
-      r
+      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
+      Ok(r)
     }
   })
 }
@@ -277,6 +408,23 @@ async fn divisors_handler(
 async fn divisors_handler_ws(socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState>) {
   state
     .schedule(Arc::new(WebSocketWriter::new(socket)), TaskState::DivisorsTaskBegin(n), ts, format!("Divisors of {}", n))
+    .await;
+}
+
+async fn fibonacci_handler(
+  ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+  ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
+}
+
+async fn fibonacci_handler_ws(socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState>) {
+  state
+    .schedule(
+      Arc::new(WebSocketWriter::new(socket)),
+      TaskState::FibonacciTaskBegin(FibonacciBeginParams { n }),
+      ts,
+      format!("Fibonacci number {n}"),
+    )
     .await;
 }
 
@@ -316,80 +464,49 @@ async fn execute_pending_operations(mut state: Arc<AppState>) {
 
 async fn execute_pending_operations_inner(state: &mut Arc<AppState>) {
   loop {
-    let now: LogicalTimeMs = state.timer.millis_since_start();
-    let task_id_to_execute = {
-      let mut fsm = state.fsm.lock().await;
-      if let Some(peek) = fsm.pending_operations.peek() {
-        if peek.scheduled_timestamp <= now {
-          if let Some(task_with_timestamp) = fsm.pending_operations.pop() {
-            Some(task_with_timestamp.task_id)
-          } else {
-            None
-          }
-        } else {
-          None
-        }
-      } else {
-        None
-      }
-    };
+    let mut fsm = state.fsm.lock().await;
+    let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
+    if let Some((task_id, scheduled_timestamp)) = {
+      // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
+      fsm
+        .pending_operations
+        .peek()
+        .map(|t| t.scheduled_timestamp <= scheduled_timestamp_cutoff)
+        .filter(|b| *b)
+        .and_then(|_| fsm.pending_operations.pop())
+        .map(|t| (t.task_id, t.scheduled_timestamp))
+    } {
+      let task = fsm
+        .active_tasks
+        .get(&task_id)
+        .cloned()
+        .expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-    if let Some(task_id) = task_id_to_execute {
-      let task_info = {
-        let fsm = state.fsm.lock().await;
-        if let Some(task) = fsm.active_tasks.get(&task_id) {
-          (task.state.clone(), task.scheduled_timestamp)
-        } else {
-          continue;
-        }
-      };
-
-      let (task_state, original_timestamp) = task_info;
-
-      match global_step(&task_state) {
-        StepResult::FixedSleep(delay_ms, new_state) => {
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = new_state;
-            task.scheduled_timestamp = original_timestamp + delay_ms;
-          }
-
-          fsm
-            .pending_operations
-            .push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp + delay_ms, task_id });
-        }
-        StepResult::ResumeInstantly(new_state) => {
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = new_state;
-          }
-
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp, task_id });
-        }
-        StepResult::WriteAnd(message, next_step) => {
-          {
-            let fsm = state.fsm.lock().await;
-            if let Some(task) = fsm.active_tasks.get(&task_id) {
-              task.writer.write_text(message).await;
-            }
-          }
-
-          let mut fsm = state.fsm.lock().await;
-
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = next_step;
-          }
-
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp: original_timestamp, task_id });
-        }
+      match global_step(&task.state) {
         StepResult::Completed => {
-          let mut fsm = state.fsm.lock().await;
           fsm.active_tasks.remove(&task_id);
         }
+        StepResult::ResumeInstantly(new_state) => {
+          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          task.state = new_state;
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+        }
+        StepResult::FixedSleep(sleep_ms, new_state) => {
+          let scheduled_timestamp = scheduled_timestamp + sleep_ms;
+          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          task.state = new_state;
+          task.scheduled_timestamp = scheduled_timestamp;
+          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+        }
+        StepResult::WriteAnd(text, new_state) => {
+          let _ = task.writer.write_text(text, Some(scheduled_timestamp)).await;
+          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
+            task.state = new_state;
+            fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+          }
+        }
       }
-    } else if state.fsm.lock().await.pending_operations.is_empty() {
+    } else {
       break;
     }
   }
@@ -416,6 +533,7 @@ async fn main() {
     .route("/add/{a}/{b}", get(add_handler))
     .route("/delay/{t}/{s}", get(delay_handler))
     .route("/divisors/{n}", get(divisors_handler))
+    .route("/fibonacci/{n}", get(fibonacci_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/state", get(state_handler))
     .route("/quit", get(quit_handler))
@@ -440,4 +558,177 @@ async fn main() {
   }
 
   println!("rust ws state machine demo down");
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  struct MockTimer {
+    current_time: Arc<std::sync::Mutex<LogicalTimeMs>>,
+  }
+
+  impl MockTimer {
+    fn new(initial_time: LogicalTimeMs) -> Self {
+      Self { current_time: Arc::new(std::sync::Mutex::new(initial_time)) }
+    }
+
+    fn set_time(&self, time_ms: LogicalTimeMs) {
+      let mut current = self.current_time.lock().unwrap();
+      *current = time_ms;
+    }
+  }
+
+  impl TimerTrait for MockTimer {
+    fn millis_since_start(&self) -> LogicalTimeMs {
+      *self.current_time.lock().unwrap()
+    }
+  }
+
+  struct MockWriter {
+    outputs: Arc<std::sync::Mutex<Vec<String>>>,
+    timer: Arc<dyn TimerTrait>,
+  }
+
+  impl MockWriter {
+    fn new_with_timer(timer: Arc<dyn TimerTrait>) -> Self {
+      Self { outputs: Arc::new(std::sync::Mutex::new(Vec::new())), timer }
+    }
+
+    fn get_outputs_as_string(&self) -> String {
+      self.outputs.lock().unwrap().join(";")
+    }
+
+    fn clear_outputs(&self) {
+      self.outputs.lock().unwrap().clear();
+    }
+  }
+
+  impl Clone for MockWriter {
+    fn clone(&self) -> Self {
+      Self { outputs: self.outputs.clone(), timer: self.timer.clone() }
+    }
+  }
+
+  impl WriterTrait for MockWriter {
+    fn write_text<'a>(
+      &'a self, text: String, timestamp: Option<LogicalTimeMs>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+      Box::pin(async move {
+        let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
+        self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+        Ok(())
+      })
+    }
+  }
+
+  #[tokio::test]
+  async fn test_state_machine_and_execution() {
+    let timer = Arc::new(MockTimer::new(0));
+    let (quit_tx, _) = mpsc::channel::<()>(1);
+    let mut app_state = Arc::new(AppState {
+      fsm: Arc::new(Mutex::new(FiniteStateMachine {
+        next_task_id: 0,
+        pending_operations: Default::default(),
+        active_tasks: Default::default(),
+      })),
+      quit_tx,
+      timer: timer.clone(),
+    });
+    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(12), 0, "Divisors of 12".to_string()).await;
+    app_state
+      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(225, "HI".to_string()), 0, "Hello".to_string())
+      .await;
+    app_state
+      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(75, "BYE".to_string()), 200, "Bye".to_string())
+      .await;
+
+    timer.set_time(225);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected1 = vec!["120ms:12%12==0", "180ms:12%6==0", "220ms:12%4==0", "225ms:HI"].join(";");
+    assert_eq!(expected1, writer.get_outputs_as_string());
+
+    timer.set_time(1000);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected2 = vec![
+      "120ms:12%12==0",
+      "180ms:12%6==0",
+      "220ms:12%4==0",
+      "225ms:HI",
+      "250ms:12%3==0",
+      "270ms:12%2==0",
+      "275ms:BYE",
+      "280ms:12%1==0",
+      "280ms:12!",
+    ]
+    .join(";");
+    assert_eq!(expected2, writer.get_outputs_as_string());
+
+    writer.clear_outputs();
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(8), 10_000, "".to_string()).await;
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(9), 10_001, "".to_string()).await;
+    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(3), 10_002, "".to_string()).await;
+    timer.set_time(20_000);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let expected3 = vec![
+      "10032ms:3%3==0",
+      "10042ms:3%1==0",
+      "10042ms:3!",
+      "10080ms:8%8==0",
+      "10091ms:9%9==0",
+      "10120ms:8%4==0",
+      "10121ms:9%3==0",
+      "10131ms:9%1==0",
+      "10131ms:9!",
+      "10140ms:8%2==0",
+      "10150ms:8%1==0",
+      "10150ms:8!",
+    ]
+    .join(";");
+    assert_eq!(expected3, writer.get_outputs_as_string());
+  }
+
+  #[tokio::test]
+  async fn test_fibonacci_task() {
+    let timer = Arc::new(MockTimer::new(0));
+    let (quit_tx, _) = mpsc::channel::<()>(1);
+    let mut app_state = Arc::new(AppState {
+      fsm: Arc::new(Mutex::new(FiniteStateMachine {
+        next_task_id: 0,
+        pending_operations: Default::default(),
+        active_tasks: Default::default(),
+      })),
+      quit_tx,
+      timer: timer.clone(),
+    });
+    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+
+    app_state.schedule(writer.clone(), TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }), 0, "The fifth Fibonacci number".to_string()).await;
+    
+    timer.set_time(4);
+    execute_pending_operations_inner(&mut app_state).await;
+    assert_eq!("0ms:fib1[5]=1", writer.get_outputs_as_string());
+    
+    timer.set_time(10);
+    execute_pending_operations_inner(&mut app_state).await;
+    
+    assert_eq!("0ms:fib1[5]=1;5ms:fib2[5]=1", writer.get_outputs_as_string());
+    
+    timer.set_time(100);
+    execute_pending_operations_inner(&mut app_state).await;
+    
+    let expected = vec![
+      "0ms:fib1[5]=1",
+      "5ms:fib2[5]=1", 
+      "15ms:fib3[5]=2",
+      "30ms:fib4[5]=3", 
+      "50ms:fib5=5"
+    ].join(";");
+    
+    assert_eq!(expected, writer.get_outputs_as_string());
+  }
 }
