@@ -27,7 +27,7 @@ struct Args {
   port: u16,
 }
 
-trait Timer: Send + Sync {
+trait Timer: Send + Sync + 'static {
   fn millis_since_start(&self) -> LogicalTimeMs;
 }
 
@@ -47,10 +47,10 @@ impl Timer for WallTimeTimer {
   }
 }
 
-trait Writer: Send + Sync {
-  fn write_text<'a>(
-    &'a self, text: String, timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
+trait Writer: Send + Sync + 'static {
+  fn write_text(
+    self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
 }
 
 #[derive(Clone)]
@@ -65,9 +65,9 @@ impl WebSocketWriter {
 }
 
 impl Writer for WebSocketWriter {
-  fn write_text<'a>(
-    &'a self, text: String, _timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+  fn write_text(
+    self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
+  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
     Box::pin(async move {
       let mut socket = self.socket.lock().await;
       socket.send(Message::Text(text.into())).await
@@ -316,19 +316,17 @@ enum StepResult {
   WriteAnd(String, TaskState),
 }
 
-async fn add_handler<T: Timer + 'static>(
+async fn add_handler<T: Timer>(
   ws: WebSocketUpgrade, Path((a, b)): Path<(i32, i32)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| add_handler_ws(socket, a, b, state))
 }
 
-async fn add_handler_ws<T: Timer + 'static>(
-  mut socket: WebSocket, a: i32, b: i32, _state: Arc<AppState<T, WebSocketWriter>>,
-) {
+async fn add_handler_ws<T: Timer>(mut socket: WebSocket, a: i32, b: i32, _state: Arc<AppState<T, WebSocketWriter>>) {
   let _ = socket.send(Message::Text(format!("{}", a + b).into())).await;
 }
 
-async fn ackermann_handler<T: Timer + 'static>(
+async fn ackermann_handler<T: Timer>(
   ws: WebSocketUpgrade, Path((a, b)): Path<(i64, i64)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| ackermann_handler_ws(socket, a, b, state))
@@ -346,7 +344,7 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack<W: Writer + 'static>(
+fn async_ack<W: Writer>(
   w: Arc<W>, m: i64, n: i64, indent: usize,
 ) -> Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>> {
   Box::pin(async move {
@@ -356,7 +354,7 @@ fn async_ack<W: Writer + 'static>(
       w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
       Ok(n + 1)
     } else {
-      w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
+      Arc::clone(&w).write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
@@ -373,20 +371,18 @@ fn async_ack<W: Writer + 'static>(
   })
 }
 
-async fn ackermann_handler_ws<T: Timer + 'static>(
-  socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>,
-) {
+async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>) {
   let _ = async_ack(Arc::new(WebSocketWriter::new(socket)), m, n, 0).await;
 }
 
-async fn delay_handler<T: Timer + 'static>(
+async fn delay_handler<T: Timer>(
   ws: WebSocketUpgrade, Path((t, s)): Path<(LogicalTimeMs, String)>,
   State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| delay_handler_ws(socket, state.timer.millis_since_start(), t, s, state))
 }
 
-async fn delay_handler_ws<T: Timer + 'static>(
+async fn delay_handler_ws<T: Timer>(
   socket: WebSocket, ts: LogicalTimeMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -399,13 +395,13 @@ async fn delay_handler_ws<T: Timer + 'static>(
     .await;
 }
 
-async fn divisors_handler<T: Timer + 'static>(
+async fn divisors_handler<T: Timer>(
   ws: WebSocketUpgrade, Path(a): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| divisors_handler_ws(socket, state.timer.millis_since_start(), a, state))
 }
 
-async fn divisors_handler_ws<T: Timer + 'static>(
+async fn divisors_handler_ws<T: Timer>(
   socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -413,13 +409,13 @@ async fn divisors_handler_ws<T: Timer + 'static>(
     .await;
 }
 
-async fn fibonacci_handler<T: Timer + 'static>(
+async fn fibonacci_handler<T: Timer>(
   ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
 }
 
-async fn fibonacci_handler_ws<T: Timer + 'static>(
+async fn fibonacci_handler_ws<T: Timer>(
   socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -432,11 +428,11 @@ async fn fibonacci_handler_ws<T: Timer + 'static>(
     .await;
 }
 
-async fn root_handler<T: Timer + 'static, W: Writer>(_state: State<Arc<AppState<T, W>>>) -> impl IntoResponse {
+async fn root_handler<T: Timer, W: Writer>(_state: State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   "magic"
 }
 
-async fn state_handler<T: Timer + 'static, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
+async fn state_handler<T: Timer, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   let active_tasks_copy = state.fsm.lock().await.active_tasks.clone();
 
   let mut response = String::from("Active tasks:\n");
@@ -452,12 +448,12 @@ async fn state_handler<T: Timer + 'static, W: Writer>(State(state): State<Arc<Ap
   response
 }
 
-async fn quit_handler<T: Timer + 'static, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
+async fn quit_handler<T: Timer, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   let _ = state.quit_tx.send(()).await;
   "TY\n"
 }
 
-async fn execute_pending_operations<T: Timer + 'static, W: Writer>(mut state: Arc<AppState<T, W>>) {
+async fn execute_pending_operations<T: Timer, W: Writer>(mut state: Arc<AppState<T, W>>) {
   loop {
     execute_pending_operations_inner(&mut state).await;
 
@@ -466,7 +462,7 @@ async fn execute_pending_operations<T: Timer + 'static, W: Writer>(mut state: Ar
   }
 }
 
-async fn execute_pending_operations_inner<T: Timer + 'static, W: Writer>(state: &mut Arc<AppState<T, W>>) {
+async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<AppState<T, W>>) {
   loop {
     let mut fsm = state.fsm.lock().await;
     let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
@@ -614,9 +610,9 @@ mod tests {
   }
 
   impl<T: Timer> Writer for MockWriter<T> {
-    fn write_text<'a>(
-      &'a self, text: String, timestamp: Option<LogicalTimeMs>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
+    fn write_text(
+      self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
       Box::pin(async move {
         let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
         self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
