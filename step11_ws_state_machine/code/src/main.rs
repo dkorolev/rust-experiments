@@ -53,14 +53,9 @@ trait Writer: Send + Sync {
   ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
 }
 
+#[derive(Clone)]
 struct WebSocketWriter {
   socket: Arc<Mutex<WebSocket>>,
-}
-
-impl Clone for WebSocketWriter {
-  fn clone(&self) -> Self {
-    Self { socket: self.socket.clone() }
-  }
 }
 
 impl WebSocketWriter {
@@ -175,7 +170,7 @@ fn format_fibonacci_result(n: u64, result: u64) -> String {
 fn global_step(state: &TaskState) -> StepResult {
   match state {
     TaskState::DelayedMessageTaskBegin(sleep_ms, message) => {
-      StepResult::FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, message.clone()))
+      StepResult::FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, String::from(message)))
     }
     TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
       StepResult::WriteAnd(format_delayed_message(*sleep_ms, message), TaskState::Completed)
@@ -270,13 +265,14 @@ struct FiniteStateMachineTask<W: Writer> {
   writer: Arc<W>,
 }
 
+// NOTE(dkorolev): Just `#[derive(Clone)]` above does not do the trick.
 impl<W: Writer> Clone for FiniteStateMachineTask<W> {
   fn clone(self: &Self) -> Self {
     Self {
-      description: self.description.clone(),
+      description: String::clone(&self.description),
       state: self.state.clone(),
-      scheduled_timestamp: self.scheduled_timestamp.clone(),
-      writer: self.writer.clone(),
+      scheduled_timestamp: self.scheduled_timestamp,
+      writer: Arc::clone(&self.writer),
     }
   }
 }
@@ -320,17 +316,6 @@ enum StepResult {
   WriteAnd(String, TaskState),
 }
 
-#[derive(Clone)]
-struct AckermannContext {
-  writer: Arc<dyn Writer>,
-}
-
-impl AckermannContext {
-  fn new(writer: Arc<dyn Writer>) -> Self {
-    Self { writer }
-  }
-}
-
 async fn add_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path((a, b)): Path<(i32, i32)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
@@ -361,28 +346,28 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack(
-  ctx: AckermannContext, m: i64, n: i64, indent: usize,
+fn async_ack<W: Writer + 'static>(
+  w: Arc<W>, m: i64, n: i64, indent: usize,
 ) -> Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>> {
   Box::pin(async move {
     let indentation = " ".repeat(indent);
     if m == 0 {
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      ctx.writer.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
+      w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
       Ok(n + 1)
     } else {
-      ctx.writer.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
+      w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
-        (m, 0) => async_ack(ctx.clone(), m - 1, 1, indent + 2).await?,
+        (m, 0) => async_ack(Arc::clone(&w), m - 1, 1, indent + 2).await?,
         (m, n) => {
-          async_ack(ctx.clone(), m - 1, async_ack(ctx.clone(), m, n - 1, indent + 2).await?, indent + 2).await?
+          async_ack(Arc::clone(&w), m - 1, async_ack(Arc::clone(&w), m, n - 1, indent + 2).await?, indent + 2).await?
         }
       };
 
       tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      ctx.writer.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
+      w.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
       Ok(r)
     }
   })
@@ -391,8 +376,7 @@ fn async_ack(
 async fn ackermann_handler_ws<T: Timer + 'static>(
   socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>,
 ) {
-  let ctx = AckermannContext::new(Arc::new(WebSocketWriter::new(socket)));
-  let _ = async_ack(ctx, m, n, 0).await;
+  let _ = async_ack(Arc::new(WebSocketWriter::new(socket)), m, n, 0).await;
 }
 
 async fn delay_handler<T: Timer + 'static>(
@@ -408,7 +392,7 @@ async fn delay_handler_ws<T: Timer + 'static>(
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      TaskState::DelayedMessageTaskBegin(t, s.clone()),
+      TaskState::DelayedMessageTaskBegin(t, String::clone(&s)),
       ts,
       format!("Delayed by {}ms: `{}`.", t, s),
     )
@@ -557,7 +541,7 @@ async fn main() {
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/state", get(state_handler))
     .route("/quit", get(quit_handler))
-    .with_state(app_state.clone());
+    .with_state(Arc::clone(&app_state));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], args.port));
   let listener = TcpListener::bind(addr).await.unwrap();
@@ -572,7 +556,7 @@ async fn main() {
 
   tokio::select! {
     _ = server.with_graceful_shutdown(shutdown) => {},
-    _ = execute_pending_operations(app_state.clone()) => {
+    _ = execute_pending_operations(Arc::clone(&app_state)) => {
       unreachable!();
     }
   }
@@ -625,7 +609,7 @@ mod tests {
 
   impl<T: Timer> Clone for MockWriter<T> {
     fn clone(&self) -> Self {
-      Self { outputs: self.outputs.clone(), timer: self.timer.clone() }
+      Self { outputs: Arc::clone(&self.outputs), timer: Arc::clone(&self.timer) }
     }
   }
 
@@ -652,16 +636,16 @@ mod tests {
         active_tasks: Default::default(),
       })),
       quit_tx,
-      timer: timer.clone(),
+      timer: Arc::clone(&timer),
     });
-    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+    let writer = Arc::new(MockWriter::new_with_timer(Arc::clone(&timer)));
 
-    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(12), 0, "Divisors of 12".to_string()).await;
+    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(12), 0, "Divisors of 12".to_string()).await;
     app_state
-      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(225, "HI".to_string()), 0, "Hello".to_string())
+      .schedule(Arc::clone(&writer), TaskState::DelayedMessageTaskBegin(225, "HI".to_string()), 0, "Hello".to_string())
       .await;
     app_state
-      .schedule(writer.clone(), TaskState::DelayedMessageTaskBegin(75, "BYE".to_string()), 200, "Bye".to_string())
+      .schedule(Arc::clone(&writer), TaskState::DelayedMessageTaskBegin(75, "BYE".to_string()), 200, "Bye".to_string())
       .await;
 
     timer.set_time(225);
@@ -688,9 +672,9 @@ mod tests {
     assert_eq!(expected2, writer.get_outputs_as_string());
 
     writer.clear_outputs();
-    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(8), 10_000, "".to_string()).await;
-    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(9), 10_001, "".to_string()).await;
-    app_state.schedule(writer.clone(), TaskState::DivisorsTaskBegin(3), 10_002, "".to_string()).await;
+    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(8), 10_000, "".to_string()).await;
+    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(9), 10_001, "".to_string()).await;
+    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(3), 10_002, "".to_string()).await;
     timer.set_time(20_000);
     execute_pending_operations_inner(&mut app_state).await;
 
@@ -723,13 +707,13 @@ mod tests {
         active_tasks: Default::default(),
       })),
       quit_tx,
-      timer: timer.clone(),
+      timer: Arc::clone(&timer),
     });
-    let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
+    let writer = Arc::new(MockWriter::new_with_timer(Arc::clone(&timer)));
 
     app_state
       .schedule(
-        writer.clone(),
+        Arc::clone(&writer),
         TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }),
         0,
         "The fifth Fibonacci number".to_string(),
