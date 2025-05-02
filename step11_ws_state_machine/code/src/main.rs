@@ -27,27 +27,27 @@ struct Args {
   port: u16,
 }
 
-trait TimerTrait: Send + Sync {
+trait Timer: Send + Sync {
   fn millis_since_start(&self) -> LogicalTimeMs;
 }
 
-struct Timer {
+struct WallTimeTimer {
   start_time: std::time::Instant,
 }
 
-impl Timer {
+impl WallTimeTimer {
   fn new() -> Self {
     Self { start_time: std::time::Instant::now() }
   }
 }
 
-impl TimerTrait for Timer {
+impl Timer for WallTimeTimer {
   fn millis_since_start(&self) -> LogicalTimeMs {
     self.start_time.elapsed().as_millis() as LogicalTimeMs
   }
 }
 
-trait WriterTrait: Send + Sync {
+trait Writer: Send + Sync {
   fn write_text<'a>(
     &'a self, text: String, timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>>;
@@ -69,7 +69,7 @@ impl WebSocketWriter {
   }
 }
 
-impl WriterTrait for WebSocketWriter {
+impl Writer for WebSocketWriter {
   fn write_text<'a>(
     &'a self, text: String, _timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
@@ -240,13 +240,13 @@ fn global_step(state: &TaskState) -> StepResult {
   }
 }
 
-struct AppState<T: TimerTrait, W: WriterTrait> {
+struct AppState<T: Timer, W: Writer> {
   fsm: Arc<Mutex<FiniteStateMachine<W>>>,
   quit_tx: mpsc::Sender<()>,
   timer: Arc<T>,
 }
 
-impl<T: TimerTrait, W: WriterTrait> AppState<T, W> {
+impl<T: Timer, W: Writer> AppState<T, W> {
   async fn schedule(
     &self, writer: Arc<W>, state: TaskState, scheduled_timestamp: LogicalTimeMs, task_description: String,
   ) {
@@ -263,14 +263,14 @@ impl<T: TimerTrait, W: WriterTrait> AppState<T, W> {
   }
 }
 
-struct FiniteStateMachineTask<W: WriterTrait> {
+struct FiniteStateMachineTask<W: Writer> {
   description: String,
   state: TaskState,
   scheduled_timestamp: LogicalTimeMs,
   writer: Arc<W>,
 }
 
-impl<W: WriterTrait> Clone for FiniteStateMachineTask<W> {
+impl<W: Writer> Clone for FiniteStateMachineTask<W> {
   fn clone(self: &Self) -> Self {
     Self {
       description: self.description.clone(),
@@ -307,7 +307,7 @@ impl PartialOrd for TaskIdWithTimestamp {
   }
 }
 
-struct FiniteStateMachine<W: WriterTrait> {
+struct FiniteStateMachine<W: Writer> {
   next_task_id: u64,
   pending_operations: BinaryHeap<TaskIdWithTimestamp>,
   active_tasks: std::collections::HashMap<u64, FiniteStateMachineTask<W>>,
@@ -322,28 +322,28 @@ enum StepResult {
 
 #[derive(Clone)]
 struct AckermannContext {
-  writer: Arc<dyn WriterTrait>,
+  writer: Arc<dyn Writer>,
 }
 
 impl AckermannContext {
-  fn new(writer: Arc<dyn WriterTrait>) -> Self {
+  fn new(writer: Arc<dyn Writer>) -> Self {
     Self { writer }
   }
 }
 
-async fn add_handler<T: TimerTrait + 'static>(
+async fn add_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path((a, b)): Path<(i32, i32)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| add_handler_ws(socket, a, b, state))
 }
 
-async fn add_handler_ws<T: TimerTrait + 'static>(
+async fn add_handler_ws<T: Timer + 'static>(
   mut socket: WebSocket, a: i32, b: i32, _state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   let _ = socket.send(Message::Text(format!("{}", a + b).into())).await;
 }
 
-async fn ackermann_handler<T: TimerTrait + 'static>(
+async fn ackermann_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path((a, b)): Path<(i64, i64)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| ackermann_handler_ws(socket, a, b, state))
@@ -388,21 +388,21 @@ fn async_ack(
   })
 }
 
-async fn ackermann_handler_ws<T: TimerTrait + 'static>(
+async fn ackermann_handler_ws<T: Timer + 'static>(
   socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   let ctx = AckermannContext::new(Arc::new(WebSocketWriter::new(socket)));
   let _ = async_ack(ctx, m, n, 0).await;
 }
 
-async fn delay_handler<T: TimerTrait + 'static>(
+async fn delay_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path((t, s)): Path<(LogicalTimeMs, String)>,
   State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| delay_handler_ws(socket, state.timer.millis_since_start(), t, s, state))
 }
 
-async fn delay_handler_ws<T: TimerTrait + 'static>(
+async fn delay_handler_ws<T: Timer + 'static>(
   socket: WebSocket, ts: LogicalTimeMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -415,13 +415,13 @@ async fn delay_handler_ws<T: TimerTrait + 'static>(
     .await;
 }
 
-async fn divisors_handler<T: TimerTrait + 'static>(
+async fn divisors_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path(a): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| divisors_handler_ws(socket, state.timer.millis_since_start(), a, state))
 }
 
-async fn divisors_handler_ws<T: TimerTrait + 'static>(
+async fn divisors_handler_ws<T: Timer + 'static>(
   socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -429,13 +429,13 @@ async fn divisors_handler_ws<T: TimerTrait + 'static>(
     .await;
 }
 
-async fn fibonacci_handler<T: TimerTrait + 'static>(
+async fn fibonacci_handler<T: Timer + 'static>(
   ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
 }
 
-async fn fibonacci_handler_ws<T: TimerTrait + 'static>(
+async fn fibonacci_handler_ws<T: Timer + 'static>(
   socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
@@ -448,15 +448,11 @@ async fn fibonacci_handler_ws<T: TimerTrait + 'static>(
     .await;
 }
 
-async fn root_handler<T: TimerTrait + 'static, W: WriterTrait>(
-  _state: State<Arc<AppState<T, W>>>,
-) -> impl IntoResponse {
+async fn root_handler<T: Timer + 'static, W: Writer>(_state: State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   "magic"
 }
 
-async fn state_handler<T: TimerTrait + 'static, W: WriterTrait>(
-  State(state): State<Arc<AppState<T, W>>>,
-) -> impl IntoResponse {
+async fn state_handler<T: Timer + 'static, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   let active_tasks_copy = state.fsm.lock().await.active_tasks.clone();
 
   let mut response = String::from("Active tasks:\n");
@@ -472,14 +468,12 @@ async fn state_handler<T: TimerTrait + 'static, W: WriterTrait>(
   response
 }
 
-async fn quit_handler<T: TimerTrait + 'static, W: WriterTrait>(
-  State(state): State<Arc<AppState<T, W>>>,
-) -> impl IntoResponse {
+async fn quit_handler<T: Timer + 'static, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
   let _ = state.quit_tx.send(()).await;
   "TY\n"
 }
 
-async fn execute_pending_operations<T: TimerTrait + 'static, W: WriterTrait>(mut state: Arc<AppState<T, W>>) {
+async fn execute_pending_operations<T: Timer + 'static, W: Writer>(mut state: Arc<AppState<T, W>>) {
   loop {
     execute_pending_operations_inner(&mut state).await;
 
@@ -488,7 +482,7 @@ async fn execute_pending_operations<T: TimerTrait + 'static, W: WriterTrait>(mut
   }
 }
 
-async fn execute_pending_operations_inner<T: TimerTrait + 'static, W: WriterTrait>(state: &mut Arc<AppState<T, W>>) {
+async fn execute_pending_operations_inner<T: Timer + 'static, W: Writer>(state: &mut Arc<AppState<T, W>>) {
   loop {
     let mut fsm = state.fsm.lock().await;
     let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
@@ -541,7 +535,7 @@ async fn execute_pending_operations_inner<T: TimerTrait + 'static, W: WriterTrai
 #[tokio::main]
 async fn main() {
   let args = Args::parse();
-  let timer = Arc::new(Timer::new());
+  let timer = Arc::new(WallTimeTimer::new());
   let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
   let app_state = Arc::new(AppState {
@@ -604,18 +598,18 @@ mod tests {
     }
   }
 
-  impl TimerTrait for MockTimer {
+  impl Timer for MockTimer {
     fn millis_since_start(&self) -> LogicalTimeMs {
       *self.current_time.lock().unwrap()
     }
   }
 
-  struct MockWriter<T: TimerTrait> {
+  struct MockWriter<T: Timer> {
     outputs: Arc<std::sync::Mutex<Vec<String>>>,
     timer: Arc<T>,
   }
 
-  impl<T: TimerTrait> MockWriter<T> {
+  impl<T: Timer> MockWriter<T> {
     fn new_with_timer(timer: Arc<T>) -> Self {
       Self { outputs: Arc::new(std::sync::Mutex::new(Vec::new())), timer }
     }
@@ -629,13 +623,13 @@ mod tests {
     }
   }
 
-  impl<T: TimerTrait> Clone for MockWriter<T> {
+  impl<T: Timer> Clone for MockWriter<T> {
     fn clone(&self) -> Self {
       Self { outputs: self.outputs.clone(), timer: self.timer.clone() }
     }
   }
 
-  impl<T: TimerTrait> WriterTrait for MockWriter<T> {
+  impl<T: Timer> Writer for MockWriter<T> {
     fn write_text<'a>(
       &'a self, text: String, timestamp: Option<LogicalTimeMs>,
     ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'a>> {
