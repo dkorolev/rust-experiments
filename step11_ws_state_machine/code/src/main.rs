@@ -199,11 +199,11 @@ fn global_step(state: &TaskState) -> StepResult {
       if *n <= 1 {
         StepResult::WriteAnd(format_fibonacci_result(*n, *n), TaskState::Completed)
       } else {
-        StepResult::ResumeInstantly(TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
-          n: *n, 
-          index: 1, 
-          a: 0, 
-          b: 1 
+        StepResult::ResumeInstantly(TaskState::FibonacciTaskCalculate(FibonacciCalculateParams {
+          n: *n,
+          index: 1,
+          a: 0,
+          b: 1,
         }))
       }
     }
@@ -214,27 +214,25 @@ fn global_step(state: &TaskState) -> StepResult {
         let delay = 5 * index;
         StepResult::WriteAnd(
           format_fibonacci_step(*n, *index, *b, *a),
-          TaskState::DelayedFibonacciStep(DelayedFibonacciStepParams { 
-            delay_ms: delay, 
-            n: *n, 
-            next_index: *index + 1, 
-            a: *b, 
-            b: *a + *b 
+          TaskState::DelayedFibonacciStep(DelayedFibonacciStepParams {
+            delay_ms: delay,
+            n: *n,
+            next_index: *index + 1,
+            a: *b,
+            b: *a + *b,
           }),
         )
       }
     }
-    TaskState::DelayedFibonacciStep(params) => {
-      StepResult::FixedSleep(
-        params.delay_ms, 
-        TaskState::FibonacciTaskCalculate(FibonacciCalculateParams { 
-          n: params.n, 
-          index: params.next_index, 
-          a: params.a, 
-          b: params.b 
-        })
-      )
-    }
+    TaskState::DelayedFibonacciStep(params) => StepResult::FixedSleep(
+      params.delay_ms,
+      TaskState::FibonacciTaskCalculate(FibonacciCalculateParams {
+        n: params.n,
+        index: params.next_index,
+        a: params.a,
+        b: params.b,
+      }),
+    ),
     TaskState::FibonacciTaskResult(FibonacciResultParams { n, result }) => {
       StepResult::WriteAnd(format_fibonacci_result(*n, *result), TaskState::Completed)
     }
@@ -707,28 +705,29 @@ mod tests {
     });
     let writer = Arc::new(MockWriter::new_with_timer(timer.clone()));
 
-    app_state.schedule(writer.clone(), TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }), 0, "The fifth Fibonacci number".to_string()).await;
-    
+    app_state
+      .schedule(
+        writer.clone(),
+        TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }),
+        0,
+        "The fifth Fibonacci number".to_string(),
+      )
+      .await;
+
     timer.set_time(4);
     execute_pending_operations_inner(&mut app_state).await;
     assert_eq!("0ms:fib1[5]=1", writer.get_outputs_as_string());
-    
+
     timer.set_time(10);
     execute_pending_operations_inner(&mut app_state).await;
-    
+
     assert_eq!("0ms:fib1[5]=1;5ms:fib2[5]=1", writer.get_outputs_as_string());
-    
+
     timer.set_time(100);
     execute_pending_operations_inner(&mut app_state).await;
-    
-    let expected = vec![
-      "0ms:fib1[5]=1",
-      "5ms:fib2[5]=1", 
-      "15ms:fib3[5]=2",
-      "30ms:fib4[5]=3", 
-      "50ms:fib5=5"
-    ].join(";");
-    
+
+    let expected = vec!["0ms:fib1[5]=1", "5ms:fib2[5]=1", "15ms:fib3[5]=2", "30ms:fib4[5]=3", "50ms:fib5=5"].join(";");
+
     assert_eq!(expected, writer.get_outputs_as_string());
   }
 }
