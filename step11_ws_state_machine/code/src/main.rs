@@ -47,7 +47,7 @@ impl Timer for WallTimeTimer {
 }
 
 trait Writer: Send + Sync + 'static {
-  async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error>
+  async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), Box<dyn std::error::Error>>
   where
     Self: Send;
 }
@@ -73,9 +73,11 @@ impl WebSocketWriter {
 }
 
 impl Writer for WebSocketWriter {
-  async fn write_text(&self, text: String, _timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error> {
-    // NOTE(dkorolev): Clean up this error type.
-    self.sender.send(text).await.map_err(|_| axum::Error::new("hehe, wrapped the error!"))
+  async fn write_text(
+    &self, text: String, _timestamp: Option<LogicalTimeMs>,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    self.sender.send(text).await.map_err(|e| Box::new(e))?;
+    Ok(())
   }
 }
 
@@ -348,7 +350,7 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-async fn async_ack<W: Writer>(w: Arc<W>, m: i64, n: i64, indent: usize) -> Result<i64, axum::Error> {
+async fn async_ack<W: Writer>(w: Arc<W>, m: i64, n: i64, indent: usize) -> Result<i64, Box<dyn std::error::Error>> {
   let indentation = " ".repeat(indent);
   if m == 0 {
     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -611,7 +613,9 @@ mod tests {
   }
 
   impl<T: Timer> Writer for MockWriter<T> {
-    async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error> {
+    async fn write_text(
+      &self, text: String, timestamp: Option<LogicalTimeMs>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
       let timer = Arc::clone(&self.timer);
       let outputs = Arc::clone(&self.outputs);
       let time_to_use = timestamp.unwrap_or_else(|| timer.millis_since_start());
