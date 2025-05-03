@@ -57,12 +57,22 @@ trait Writer: Send + Sync + 'static {
 }
 
 struct WebSocketWriter {
-  socket: Arc<Mutex<WebSocket>>,
+  sender: mpsc::Sender<String>,
+  _task: tokio::task::JoinHandle<()>,
 }
 
 impl WebSocketWriter {
   fn new(socket: WebSocket) -> Self {
-    Self { socket: Arc::new(Mutex::new(socket)) }
+    let (sender, mut receiver) = mpsc::channel::<String>(100);
+    let mut socket = socket;
+
+    let task = tokio::spawn(async move {
+      while let Some(text) = receiver.recv().await {
+        let _ = socket.send(Message::Text(text.into())).await;
+      }
+    });
+
+    Self { sender, _task: task }
   }
 }
 
@@ -70,7 +80,11 @@ impl Writer for WebSocketWriter {
   fn write_text(
     self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
-    Box::pin(async move { self.socket.lock().await.send(Message::Text(text.into())).await })
+    let sender = self.sender.clone();
+    Box::pin(async move {
+      let _ = sender.send(text).await;
+      Ok(())
+    })
   }
 }
 
