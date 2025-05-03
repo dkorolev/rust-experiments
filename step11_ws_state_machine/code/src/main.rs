@@ -10,9 +10,7 @@ use axum::{
 use clap::Parser;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
@@ -49,9 +47,9 @@ impl Timer for WallTimeTimer {
 }
 
 trait Writer: Send + Sync + 'static {
-  fn write_text(
-    &self, text: String, timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
+  async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error>
+  where
+    Self: Send;
 }
 
 struct WebSocketWriter {
@@ -75,14 +73,9 @@ impl WebSocketWriter {
 }
 
 impl Writer for WebSocketWriter {
-  fn write_text(
-    &self, text: String, _timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
-    let sender = self.sender.clone();
-    Box::pin(async move {
-      let _ = sender.send(text).await;
-      Ok(())
-    })
+  async fn write_text(&self, text: String, _timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error> {
+    // NOTE(dkorolev): Clean up this error type.
+    self.sender.send(text).await.map_err(|_| axum::Error::new("hehe, wrapped the error!"))
   }
 }
 
@@ -355,31 +348,28 @@ fn ackermann(m: u64, n: u64) -> u64 {
 
 // NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack<W: Writer>(
-  w: Arc<W>, m: i64, n: i64, indent: usize,
-) -> Pin<Box<dyn Future<Output = Result<i64, axum::Error>> + Send>> {
-  Box::pin(async move {
-    let indentation = " ".repeat(indent);
-    if m == 0 {
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
-      Ok(n + 1)
-    } else {
-      w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
+async fn async_ack<W: Writer>(w: Arc<W>, m: i64, n: i64, indent: usize) -> Result<i64, axum::Error> {
+  let indentation = " ".repeat(indent);
+  if m == 0 {
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
+    Ok(n + 1)
+  } else {
+    w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
-      let r = match (m, n) {
-        (0, n) => n + 1,
-        (m, 0) => async_ack(Arc::clone(&w), m - 1, 1, indent + 2).await?,
-        (m, n) => {
-          async_ack(Arc::clone(&w), m - 1, async_ack(Arc::clone(&w), m, n - 1, indent + 2).await?, indent + 2).await?
-        }
-      };
+    let r = match (m, n) {
+      (0, n) => n + 1,
+      (m, 0) => Box::pin(async_ack(Arc::clone(&w), m - 1, 1, indent + 2)).await?,
+      (m, n) => {
+        let inner_result = Box::pin(async_ack(Arc::clone(&w), m, n - 1, indent + 2)).await?;
+        Box::pin(async_ack(Arc::clone(&w), m - 1, inner_result, indent + 2)).await?
+      }
+    };
 
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      w.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
-      Ok(r)
-    }
-  })
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    w.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
+    Ok(r)
+  }
 }
 
 async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>) {
@@ -621,16 +611,12 @@ mod tests {
   }
 
   impl<T: Timer> Writer for MockWriter<T> {
-    fn write_text(
-      &self, text: String, timestamp: Option<LogicalTimeMs>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
+    async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), axum::Error> {
       let timer = Arc::clone(&self.timer);
       let outputs = Arc::clone(&self.outputs);
       let time_to_use = timestamp.unwrap_or_else(|| timer.millis_since_start());
-      Box::pin(async move {
-        outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
-        Ok(())
-      })
+      outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+      Ok(())
     }
   }
 
