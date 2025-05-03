@@ -18,7 +18,63 @@ use tokio::{
   sync::{Mutex, mpsc},
 };
 
-type LogicalTimeMs = u64;
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LogicalTimeAbsoluteMs(u64);
+
+impl LogicalTimeAbsoluteMs {
+  pub fn from_millis(millis: u64) -> Self {
+    Self(millis)
+  }
+
+  pub fn as_millis(&self) -> u64 {
+    self.0
+  }
+}
+
+impl std::fmt::Display for LogicalTimeAbsoluteMs {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
+impl std::ops::Add<LogicalTimeDeltaMs> for LogicalTimeAbsoluteMs {
+  type Output = LogicalTimeAbsoluteMs;
+
+  fn add(self, rhs: LogicalTimeDeltaMs) -> Self::Output {
+    LogicalTimeAbsoluteMs(self.0 + rhs.as_millis())
+  }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LogicalTimeDeltaMs(u64);
+
+impl LogicalTimeDeltaMs {
+  pub fn from_millis(millis: u64) -> Self {
+    Self(millis)
+  }
+
+  pub fn as_millis(&self) -> u64 {
+    self.0
+  }
+}
+
+impl std::fmt::Display for LogicalTimeDeltaMs {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
+impl From<u64> for LogicalTimeDeltaMs {
+  fn from(millis: u64) -> Self {
+    Self::from_millis(millis)
+  }
+}
+
+impl From<u64> for LogicalTimeAbsoluteMs {
+  fn from(millis: u64) -> Self {
+    Self::from_millis(millis)
+  }
+}
 
 #[derive(Parser)]
 struct Args {
@@ -27,7 +83,7 @@ struct Args {
 }
 
 trait Timer: Send + Sync + 'static {
-  fn millis_since_start(&self) -> LogicalTimeMs;
+  fn millis_since_start(&self) -> LogicalTimeAbsoluteMs;
 }
 
 struct WallTimeTimer {
@@ -41,13 +97,15 @@ impl WallTimeTimer {
 }
 
 impl Timer for WallTimeTimer {
-  fn millis_since_start(&self) -> LogicalTimeMs {
-    self.start_time.elapsed().as_millis() as LogicalTimeMs
+  fn millis_since_start(&self) -> LogicalTimeAbsoluteMs {
+    LogicalTimeAbsoluteMs::from_millis(self.start_time.elapsed().as_millis() as u64)
   }
 }
 
 trait Writer: Send + Sync + 'static {
-  async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), Box<dyn std::error::Error>>
+  async fn write_text(
+    &self, text: String, timestamp: Option<LogicalTimeAbsoluteMs>,
+  ) -> Result<(), Box<dyn std::error::Error>>
   where
     Self: Send;
 }
@@ -74,7 +132,7 @@ impl WebSocketWriter {
 
 impl Writer for WebSocketWriter {
   async fn write_text(
-    &self, text: String, _timestamp: Option<LogicalTimeMs>,
+    &self, text: String, _timestamp: Option<LogicalTimeAbsoluteMs>,
   ) -> Result<(), Box<dyn std::error::Error>> {
     self.sender.send(text).await.map_err(Box::new)?;
     Ok(())
@@ -102,7 +160,7 @@ struct FibonacciResultParams {
 
 #[derive(Clone, Debug)]
 struct DelayedFibonacciStepParams {
-  delay_ms: LogicalTimeMs,
+  delay_ms: LogicalTimeDeltaMs,
   n: u64,
   next_index: u64,
   a: u64,
@@ -111,8 +169,8 @@ struct DelayedFibonacciStepParams {
 
 #[derive(Clone, Debug)]
 enum TaskState {
-  DelayedMessageTaskBegin(LogicalTimeMs, String),
-  DelayedMessageTaskExecute(LogicalTimeMs, String),
+  DelayedMessageTaskBegin(LogicalTimeAbsoluteMs, String),
+  DelayedMessageTaskExecute(LogicalTimeAbsoluteMs, String),
   DivisorsTaskBegin(u64),
   DivisorsTaskIteration(u64, u64),
   DivisorsPrintAndMoveOn(u64, u64),
@@ -124,7 +182,7 @@ enum TaskState {
 }
 
 #[cfg(not(test))]
-fn format_delayed_message(sleep_ms: LogicalTimeMs, message: &str) -> String {
+fn format_delayed_message(sleep_ms: LogicalTimeAbsoluteMs, message: &str) -> String {
   format!("Delayed by {sleep_ms}ms: `{message}`.")
 }
 
@@ -149,7 +207,7 @@ fn format_fibonacci_result(n: u64, result: u64) -> String {
 }
 
 #[cfg(test)]
-fn format_delayed_message(_sleep_ms: LogicalTimeMs, message: &str) -> String {
+fn format_delayed_message(_sleep_ms: LogicalTimeAbsoluteMs, message: &str) -> String {
   message.to_string()
 }
 
@@ -175,9 +233,10 @@ fn format_fibonacci_result(n: u64, result: u64) -> String {
 
 fn global_step(state: &TaskState) -> StepResult {
   match state {
-    TaskState::DelayedMessageTaskBegin(sleep_ms, message) => {
-      StepResult::FixedSleep(*sleep_ms, TaskState::DelayedMessageTaskExecute(*sleep_ms, String::from(message)))
-    }
+    TaskState::DelayedMessageTaskBegin(sleep_ms, message) => StepResult::FixedSleep(
+      LogicalTimeDeltaMs::from_millis(sleep_ms.as_millis()),
+      TaskState::DelayedMessageTaskExecute(*sleep_ms, String::from(message)),
+    ),
     TaskState::DelayedMessageTaskExecute(sleep_ms, message) => {
       StepResult::WriteAnd(format_delayed_message(*sleep_ms, message), TaskState::Completed)
     }
@@ -190,7 +249,7 @@ fn global_step(state: &TaskState) -> StepResult {
       if i == 0 {
         StepResult::WriteAnd(format_divisors_done(*n), TaskState::Completed)
       } else {
-        StepResult::FixedSleep(i * 10, TaskState::DivisorsPrintAndMoveOn(*n, i))
+        StepResult::FixedSleep(LogicalTimeDeltaMs::from_millis(i * 10), TaskState::DivisorsPrintAndMoveOn(*n, i))
       }
     }
     TaskState::DivisorsPrintAndMoveOn(n, i) => {
@@ -216,7 +275,7 @@ fn global_step(state: &TaskState) -> StepResult {
         StepResult::WriteAnd(
           format_fibonacci_step(*n, *index, *b, *a),
           TaskState::DelayedFibonacciStep(DelayedFibonacciStepParams {
-            delay_ms: delay,
+            delay_ms: LogicalTimeDeltaMs::from_millis(delay),
             n: *n,
             next_index: *index + 1,
             a: *b,
@@ -249,7 +308,7 @@ struct AppState<T: Timer, W: Writer> {
 
 impl<T: Timer, W: Writer> AppState<T, W> {
   async fn schedule(
-    &self, writer: Arc<W>, state: TaskState, scheduled_timestamp: LogicalTimeMs, task_description: String,
+    &self, writer: Arc<W>, state: TaskState, scheduled_timestamp: LogicalTimeAbsoluteMs, task_description: String,
   ) {
     let mut fsm = self.fsm.lock().await;
     let task_id = fsm.next_task_id;
@@ -267,7 +326,7 @@ impl<T: Timer, W: Writer> AppState<T, W> {
 struct FiniteStateMachineTask<W: Writer> {
   description: String,
   state: TaskState,
-  scheduled_timestamp: LogicalTimeMs,
+  scheduled_timestamp: LogicalTimeAbsoluteMs,
   writer: Arc<W>,
 }
 
@@ -284,7 +343,7 @@ impl<W: Writer> Clone for FiniteStateMachineTask<W> {
 }
 
 struct TaskIdWithTimestamp {
-  scheduled_timestamp: LogicalTimeMs,
+  scheduled_timestamp: LogicalTimeAbsoluteMs,
   task_id: u64,
 }
 
@@ -317,7 +376,7 @@ struct FiniteStateMachine<W: Writer> {
 
 enum StepResult {
   Completed,
-  FixedSleep(LogicalTimeMs, TaskState),
+  FixedSleep(LogicalTimeDeltaMs, TaskState),
   ResumeInstantly(TaskState),
   WriteAnd(String, TaskState),
 }
@@ -377,19 +436,18 @@ async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _stat
 }
 
 async fn delay_handler<T: Timer>(
-  ws: WebSocketUpgrade, Path((t, s)): Path<(LogicalTimeMs, String)>,
-  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade, Path((t, s)): Path<(u64, String)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| delay_handler_ws(socket, state.timer.millis_since_start(), t, s, state))
 }
 
 async fn delay_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      TaskState::DelayedMessageTaskBegin(t, String::clone(&s)),
+      TaskState::DelayedMessageTaskBegin(LogicalTimeAbsoluteMs::from_millis(t), String::clone(&s)),
       ts,
       format!("Delayed by {}ms: `{}`.", t, s),
     )
@@ -403,7 +461,7 @@ async fn divisors_handler<T: Timer>(
 }
 
 async fn divisors_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
     .schedule(Arc::new(WebSocketWriter::new(socket)), TaskState::DivisorsTaskBegin(n), ts, format!("Divisors of {}", n))
@@ -417,7 +475,7 @@ async fn fibonacci_handler<T: Timer>(
 }
 
 async fn fibonacci_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   state
     .schedule(
@@ -466,7 +524,7 @@ async fn execute_pending_operations<T: Timer, W: Writer>(mut state: Arc<AppState
 async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<AppState<T, W>>) {
   loop {
     let mut fsm = state.fsm.lock().await;
-    let scheduled_timestamp_cutoff: LogicalTimeMs = state.timer.millis_since_start();
+    let scheduled_timestamp_cutoff: LogicalTimeAbsoluteMs = state.timer.millis_since_start();
     if let Some((task_id, scheduled_timestamp)) = {
       // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
       fsm
@@ -565,22 +623,22 @@ async fn main() {
 mod tests {
   use super::*;
   struct MockTimer {
-    current_time: Arc<std::sync::Mutex<LogicalTimeMs>>,
+    current_time: Arc<std::sync::Mutex<LogicalTimeAbsoluteMs>>,
   }
 
   impl MockTimer {
-    fn new(initial_time: LogicalTimeMs) -> Self {
-      Self { current_time: Arc::new(std::sync::Mutex::new(initial_time)) }
+    fn new(initial_time: u64) -> Self {
+      Self { current_time: Arc::new(std::sync::Mutex::new(LogicalTimeAbsoluteMs::from_millis(initial_time))) }
     }
 
-    fn set_time(&self, time_ms: LogicalTimeMs) {
+    fn set_time(&self, time_ms: u64) {
       let mut current = self.current_time.lock().unwrap();
-      *current = time_ms;
+      *current = LogicalTimeAbsoluteMs::from_millis(time_ms);
     }
   }
 
   impl Timer for MockTimer {
-    fn millis_since_start(&self) -> LogicalTimeMs {
+    fn millis_since_start(&self) -> LogicalTimeAbsoluteMs {
       *self.current_time.lock().unwrap()
     }
   }
@@ -612,12 +670,12 @@ mod tests {
 
   impl<T: Timer> Writer for MockWriter<T> {
     async fn write_text(
-      &self, text: String, timestamp: Option<LogicalTimeMs>,
+      &self, text: String, timestamp: Option<LogicalTimeAbsoluteMs>,
     ) -> Result<(), Box<dyn std::error::Error>> {
       let timer = Arc::clone(&self.timer);
       let outputs = Arc::clone(&self.outputs);
       let time_to_use = timestamp.unwrap_or_else(|| timer.millis_since_start());
-      outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+      outputs.lock().unwrap().push(format!("{}ms:{text}", time_to_use.as_millis()));
       Ok(())
     }
   }
@@ -637,12 +695,29 @@ mod tests {
     });
     let writer = Arc::new(MockWriter::new_with_timer(Arc::clone(&timer)));
 
-    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(12), 0, "Divisors of 12".to_string()).await;
     app_state
-      .schedule(Arc::clone(&writer), TaskState::DelayedMessageTaskBegin(225, "HI".to_string()), 0, "Hello".to_string())
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DivisorsTaskBegin(12),
+        LogicalTimeAbsoluteMs::from_millis(0),
+        "Divisors of 12".to_string(),
+      )
       .await;
     app_state
-      .schedule(Arc::clone(&writer), TaskState::DelayedMessageTaskBegin(75, "BYE".to_string()), 200, "Bye".to_string())
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DelayedMessageTaskBegin(LogicalTimeAbsoluteMs::from_millis(225), "HI".to_string()),
+        LogicalTimeAbsoluteMs::from_millis(0),
+        "Hello".to_string(),
+      )
+      .await;
+    app_state
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DelayedMessageTaskBegin(LogicalTimeAbsoluteMs::from_millis(75), "BYE".to_string()),
+        LogicalTimeAbsoluteMs::from_millis(200),
+        "Bye".to_string(),
+      )
       .await;
 
     timer.set_time(225);
@@ -669,9 +744,30 @@ mod tests {
     assert_eq!(expected2, writer.get_outputs_as_string());
 
     writer.clear_outputs();
-    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(8), 10_000, "".to_string()).await;
-    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(9), 10_001, "".to_string()).await;
-    app_state.schedule(Arc::clone(&writer), TaskState::DivisorsTaskBegin(3), 10_002, "".to_string()).await;
+    app_state
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DivisorsTaskBegin(8),
+        LogicalTimeAbsoluteMs::from_millis(10_000),
+        "".to_string(),
+      )
+      .await;
+    app_state
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DivisorsTaskBegin(9),
+        LogicalTimeAbsoluteMs::from_millis(10_001),
+        "".to_string(),
+      )
+      .await;
+    app_state
+      .schedule(
+        Arc::clone(&writer),
+        TaskState::DivisorsTaskBegin(3),
+        LogicalTimeAbsoluteMs::from_millis(10_002),
+        "".to_string(),
+      )
+      .await;
     timer.set_time(20_000);
     execute_pending_operations_inner(&mut app_state).await;
 
@@ -712,7 +808,7 @@ mod tests {
       .schedule(
         Arc::clone(&writer),
         TaskState::FibonacciTaskBegin(FibonacciBeginParams { n: 5 }),
-        0,
+        LogicalTimeAbsoluteMs::from_millis(0),
         "The fifth Fibonacci number".to_string(),
       )
       .await;
