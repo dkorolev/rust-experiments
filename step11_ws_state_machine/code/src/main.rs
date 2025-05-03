@@ -348,8 +348,6 @@ fn ackermann(m: u64, n: u64) -> u64 {
   }
 }
 
-// NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
-// the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
 async fn async_ack<W: Writer>(w: Arc<W>, m: i64, n: i64, indent: usize) -> Result<i64, Box<dyn std::error::Error>> {
   let indentation = " ".repeat(indent);
   if m == 0 {
