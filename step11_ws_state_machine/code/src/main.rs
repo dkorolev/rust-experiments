@@ -49,6 +49,8 @@ impl Timer for WallTimeTimer {
 }
 
 trait Writer: Send + Sync + 'static {
+  // NOTE(dkorolev): Using `Arc<Self>` is a workaround to avoid the `Send` constraint.
+  // NOTE(dkorolev): I'd love this to be an `async fn`, but alas, does not play well with recursion and `axum`.
   fn write_text(
     self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
@@ -66,8 +68,6 @@ impl WebSocketWriter {
 }
 
 impl Writer for WebSocketWriter {
-  // NOTE(dkorolev): Using `Arc<Self>` is a workaround to avoid the `Send` constraint.
-  // NOTE(dkorolev): I'v love this to be an `async fn`, but alas, does not play well with recursion and `axum`.
   fn write_text(
     self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
