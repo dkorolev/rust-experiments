@@ -1,10 +1,11 @@
 use axum::{
-  extract::ws::{Message, WebSocket},
+  Error, Router,
   extract::Path,
+  extract::ws::{Message, WebSocket},
   extract::{State, WebSocketUpgrade},
   response::IntoResponse,
   routing::get,
-  serve, Error, Router,
+  serve,
 };
 use clap::Parser;
 use std::cmp::Ordering;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
   net::TcpListener,
-  sync::{mpsc, Mutex},
+  sync::{Mutex, mpsc},
 };
 
 type LogicalTimeMs = u64;
