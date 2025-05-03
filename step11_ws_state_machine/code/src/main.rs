@@ -76,7 +76,7 @@ impl Writer for WebSocketWriter {
   async fn write_text(
     &self, text: String, _timestamp: Option<LogicalTimeMs>,
   ) -> Result<(), Box<dyn std::error::Error>> {
-    self.sender.send(text).await.map_err(|e| Box::new(e))?;
+    self.sender.send(text).await.map_err(Box::new)?;
     Ok(())
   }
 }
