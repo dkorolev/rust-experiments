@@ -49,10 +49,8 @@ impl Timer for WallTimeTimer {
 }
 
 trait Writer: Send + Sync + 'static {
-  // NOTE(dkorolev): Using `Arc<Self>` is a workaround to avoid the `Send` constraint.
-  // NOTE(dkorolev): I'd love this to be an `async fn`, but alas, does not play well with recursion and `axum`.
   fn write_text(
-    self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
+    &self, text: String, timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
 }
 
@@ -78,7 +76,7 @@ impl WebSocketWriter {
 
 impl Writer for WebSocketWriter {
   fn write_text(
-    self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
+    &self, text: String, _timestamp: Option<LogicalTimeMs>,
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
     let sender = self.sender.clone();
     Box::pin(async move {
@@ -367,7 +365,7 @@ fn async_ack<W: Writer>(
       w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
       Ok(n + 1)
     } else {
-      Arc::clone(&w).write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
+      w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
       let r = match (m, n) {
         (0, n) => n + 1,
@@ -624,11 +622,13 @@ mod tests {
 
   impl<T: Timer> Writer for MockWriter<T> {
     fn write_text(
-      self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
+      &self, text: String, timestamp: Option<LogicalTimeMs>,
     ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
+      let timer = Arc::clone(&self.timer);
+      let outputs = Arc::clone(&self.outputs);
+      let time_to_use = timestamp.unwrap_or_else(|| timer.millis_since_start());
       Box::pin(async move {
-        let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
-        self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+        outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
         Ok(())
       })
     }
