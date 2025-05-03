@@ -1,5 +1,5 @@
 use axum::{
-  Error, Router,
+  Router,
   extract::Path,
   extract::ws::{Message, WebSocket},
   extract::{State, WebSocketUpgrade},
@@ -51,7 +51,7 @@ impl Timer for WallTimeTimer {
 trait Writer: Send + Sync + 'static {
   fn write_text(
     self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>;
+  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
 }
 
 #[derive(Clone)]
@@ -66,13 +66,12 @@ impl WebSocketWriter {
 }
 
 impl Writer for WebSocketWriter {
+  // NOTE(dkorolev): Using `Arc<Self>` is a workaround to avoid the `Send` constraint.
+  // NOTE(dkorolev): I'v love this to be an `async fn`, but alas, does not play well with recursion and `axum`.
   fn write_text(
     self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
-    Box::pin(async move {
-      let mut socket = self.socket.lock().await;
-      socket.send(Message::Text(text.into())).await
-    })
+  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
+    Box::pin(async move { self.socket.lock().await.send(Message::Text(text.into())).await })
   }
 }
 
@@ -347,7 +346,7 @@ fn ackermann(m: u64, n: u64) -> u64 {
 // the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
 fn async_ack<W: Writer>(
   w: Arc<W>, m: i64, n: i64, indent: usize,
-) -> Pin<Box<dyn Future<Output = Result<i64, Error>> + Send>> {
+) -> Pin<Box<dyn Future<Output = Result<i64, axum::Error>> + Send>> {
   Box::pin(async move {
     let indentation = " ".repeat(indent);
     if m == 0 {
@@ -613,7 +612,7 @@ mod tests {
   impl<T: Timer> Writer for MockWriter<T> {
     fn write_text(
       self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
       Box::pin(async move {
         let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
         self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
