@@ -76,6 +76,44 @@ impl From<u64> for LogicalTimeAbsoluteMs {
   }
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct MaroonTaskId(u64);
+
+impl MaroonTaskId {
+  pub fn from_u64(id: u64) -> Self {
+    Self(id)
+  }
+}
+
+impl std::fmt::Display for MaroonTaskId {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.0)
+  }
+}
+
+impl From<u64> for MaroonTaskId {
+  fn from(id: u64) -> Self {
+    Self::from_u64(id)
+  }
+}
+
+#[derive(Debug, Clone)]
+struct NextTaskIdGenerator {
+  next_task_id: u64,
+}
+
+impl NextTaskIdGenerator {
+  fn new() -> Self {
+    Self { next_task_id: 1 }
+  }
+
+  fn next_task_id(&mut self) -> MaroonTaskId {
+    let task_id = MaroonTaskId::from_u64(self.next_task_id);
+    self.next_task_id += 1;
+    task_id
+  }
+}
+
 #[derive(Parser)]
 struct Args {
   #[arg(long, default_value = "3000")]
@@ -301,7 +339,7 @@ fn global_step(state: &TaskState) -> StepResult {
 }
 
 struct AppState<T: Timer, W: Writer> {
-  fsm: Arc<Mutex<FiniteStateMachine<W>>>,
+  fsm: Arc<Mutex<MaroonRuntime<W>>>,
   quit_tx: mpsc::Sender<()>,
   timer: Arc<T>,
 }
@@ -311,19 +349,17 @@ impl<T: Timer, W: Writer> AppState<T, W> {
     &self, writer: Arc<W>, state: TaskState, scheduled_timestamp: LogicalTimeAbsoluteMs, task_description: String,
   ) {
     let mut fsm = self.fsm.lock().await;
-    let task_id = fsm.next_task_id;
-    fsm.next_task_id += 1;
+    let task_id = fsm.task_id_generator.next_task_id();
 
-    fsm.active_tasks.insert(
-      task_id,
-      FiniteStateMachineTask::<W> { description: task_description, state, scheduled_timestamp, writer },
-    );
+    fsm
+      .active_tasks
+      .insert(task_id, MaroonTask::<W> { description: task_description, state, scheduled_timestamp, writer });
 
-    fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+    fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
   }
 }
 
-struct FiniteStateMachineTask<W: Writer> {
+struct MaroonTask<W: Writer> {
   description: String,
   state: TaskState,
   scheduled_timestamp: LogicalTimeAbsoluteMs,
@@ -331,7 +367,7 @@ struct FiniteStateMachineTask<W: Writer> {
 }
 
 // NOTE(dkorolev): Just `#[derive(Clone)]` above does not do the trick.
-impl<W: Writer> Clone for FiniteStateMachineTask<W> {
+impl<W: Writer> Clone for MaroonTask<W> {
   fn clone(self: &Self) -> Self {
     Self {
       description: String::clone(&self.description),
@@ -342,36 +378,36 @@ impl<W: Writer> Clone for FiniteStateMachineTask<W> {
   }
 }
 
-struct TaskIdWithTimestamp {
+struct TimestampedMaroonTask {
   scheduled_timestamp: LogicalTimeAbsoluteMs,
-  task_id: u64,
+  task_id: MaroonTaskId,
 }
 
-impl Eq for TaskIdWithTimestamp {}
+impl Eq for TimestampedMaroonTask {}
 
-impl PartialEq for TaskIdWithTimestamp {
+impl PartialEq for TimestampedMaroonTask {
   fn eq(&self, other: &Self) -> bool {
     self.scheduled_timestamp == other.scheduled_timestamp
   }
 }
 
-impl Ord for TaskIdWithTimestamp {
+impl Ord for TimestampedMaroonTask {
   fn cmp(&self, other: &Self) -> Ordering {
     // Reversed order by design.
     other.scheduled_timestamp.cmp(&self.scheduled_timestamp)
   }
 }
 
-impl PartialOrd for TaskIdWithTimestamp {
+impl PartialOrd for TimestampedMaroonTask {
   fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
     Some(self.cmp(other))
   }
 }
 
-struct FiniteStateMachine<W: Writer> {
-  next_task_id: u64,
-  pending_operations: BinaryHeap<TaskIdWithTimestamp>,
-  active_tasks: std::collections::HashMap<u64, FiniteStateMachineTask<W>>,
+struct MaroonRuntime<W: Writer> {
+  task_id_generator: NextTaskIdGenerator,
+  pending_operations: BinaryHeap<TimestampedMaroonTask>,
+  active_tasks: std::collections::HashMap<MaroonTaskId, MaroonTask<W>>,
 }
 
 enum StepResult {
@@ -496,8 +532,11 @@ async fn state_handler<T: Timer, W: Writer>(State(state): State<Arc<AppState<T, 
 
   let mut response = String::from("Active tasks:\n");
 
-  for (id, task) in active_tasks_copy.iter() {
-    response.push_str(&format!("Task ID: {}, Description: {}, State: {:?}\n", id, task.description, task.state));
+  for (id, maroon_task) in active_tasks_copy.iter() {
+    response.push_str(&format!(
+      "Task ID: {}, Description: {}, State: {:?}\n",
+      id, maroon_task.description, maroon_task.state
+    ));
   }
 
   if active_tasks_copy.is_empty() {
@@ -535,33 +574,33 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         .and_then(|_| fsm.pending_operations.pop())
         .map(|t| (t.task_id, t.scheduled_timestamp))
     } {
-      let task = fsm
+      let maroon_task = fsm
         .active_tasks
         .get(&task_id)
         .cloned()
         .expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-      match global_step(&task.state) {
+      match global_step(&maroon_task.state) {
         StepResult::Completed => {
           fsm.active_tasks.remove(&task_id);
         }
         StepResult::ResumeInstantly(new_state) => {
-          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
-          task.state = new_state;
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+          let maroon_task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          maroon_task.state = new_state;
+          fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
         }
         StepResult::FixedSleep(sleep_ms, new_state) => {
           let scheduled_timestamp = scheduled_timestamp + sleep_ms;
-          let task = fsm.active_tasks.get_mut(&task_id).unwrap();
-          task.state = new_state;
-          task.scheduled_timestamp = scheduled_timestamp;
-          fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+          let maroon_task = fsm.active_tasks.get_mut(&task_id).unwrap();
+          maroon_task.state = new_state;
+          maroon_task.scheduled_timestamp = scheduled_timestamp;
+          fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
         }
         StepResult::WriteAnd(text, new_state) => {
-          let _ = task.writer.write_text(text, Some(scheduled_timestamp)).await;
-          if let Some(task) = fsm.active_tasks.get_mut(&task_id) {
-            task.state = new_state;
-            fsm.pending_operations.push(TaskIdWithTimestamp { scheduled_timestamp, task_id });
+          let _ = maroon_task.writer.write_text(text, Some(scheduled_timestamp)).await;
+          if let Some(maroon_task) = fsm.active_tasks.get_mut(&task_id) {
+            maroon_task.state = new_state;
+            fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
           }
         }
       }
@@ -578,9 +617,9 @@ async fn main() {
   let (quit_tx, mut quit_rx) = mpsc::channel::<()>(1);
 
   let app_state = Arc::new(AppState {
-    fsm: Arc::new(Mutex::new(FiniteStateMachine {
-      next_task_id: 0,
-      pending_operations: BinaryHeap::<TaskIdWithTimestamp>::new(),
+    fsm: Arc::new(Mutex::new(MaroonRuntime {
+      task_id_generator: NextTaskIdGenerator::new(),
+      pending_operations: BinaryHeap::<TimestampedMaroonTask>::new(),
       active_tasks: std::collections::HashMap::new(),
     })),
     quit_tx,
@@ -685,8 +724,8 @@ mod tests {
     let timer = Arc::new(MockTimer::new(0));
     let (quit_tx, _) = mpsc::channel::<()>(1);
     let mut app_state = Arc::new(AppState {
-      fsm: Arc::new(Mutex::new(FiniteStateMachine {
-        next_task_id: 0,
+      fsm: Arc::new(Mutex::new(MaroonRuntime {
+        task_id_generator: NextTaskIdGenerator::new(),
         pending_operations: Default::default(),
         active_tasks: Default::default(),
       })),
@@ -794,8 +833,8 @@ mod tests {
     let timer = Arc::new(MockTimer::new(0));
     let (quit_tx, _) = mpsc::channel::<()>(1);
     let mut app_state = Arc::new(AppState {
-      fsm: Arc::new(Mutex::new(FiniteStateMachine {
-        next_task_id: 0,
+      fsm: Arc::new(Mutex::new(MaroonRuntime {
+        task_id_generator: NextTaskIdGenerator::new(),
         pending_operations: Default::default(),
         active_tasks: Default::default(),
       })),
