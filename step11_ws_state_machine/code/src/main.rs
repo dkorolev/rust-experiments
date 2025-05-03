@@ -56,7 +56,6 @@ trait Writer: Send + Sync + 'static {
   ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
 }
 
-#[derive(Clone)]
 struct WebSocketWriter {
   socket: Arc<Mutex<WebSocket>>,
 }
