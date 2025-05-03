@@ -177,7 +177,7 @@ impl Writer for WebSocketWriter {
   }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 enum MaroonTaskState {
   Completed,
   DelayedMessageTaskBegin,
@@ -191,7 +191,7 @@ enum MaroonTaskState {
   DelayedFibonacciStep,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum MaroonTaskRuntime {
   DelayedMessage(MaroonTaskRuntimeDelayedMessage),
   Divisors(MaroonTaskRuntimeDivisors),
@@ -413,19 +413,6 @@ struct MaroonTask<W: Writer> {
   writer: Arc<W>,
 }
 
-// NOTE(dkorolev): Just `#[derive(Clone)]` above does not do the trick.
-impl<W: Writer> Clone for MaroonTask<W> {
-  fn clone(self: &Self) -> Self {
-    Self {
-      description: String::clone(&self.description),
-      state: self.state.clone(),
-      runtime: self.runtime.clone(),
-      scheduled_timestamp: self.scheduled_timestamp,
-      writer: Arc::clone(&self.writer),
-    }
-  }
-}
-
 struct TimestampedMaroonTask {
   scheduled_timestamp: LogicalTimeAbsoluteMs,
   task_id: MaroonTaskId,
@@ -592,18 +579,18 @@ async fn root_handler<T: Timer, W: Writer>(_state: State<Arc<AppState<T, W>>>) -
 }
 
 async fn state_handler<T: Timer, W: Writer>(State(state): State<Arc<AppState<T, W>>>) -> impl IntoResponse {
-  let active_tasks_copy = state.fsm.lock().await.active_tasks.clone();
-
   let mut response = String::from("Active tasks:\n");
+  let mut empty = true;
 
-  for (id, maroon_task) in active_tasks_copy.iter() {
+  for (id, maroon_task) in state.fsm.lock().await.active_tasks.iter() {
+    empty = false;
     response.push_str(&format!(
       "Task ID: {}, Description: {}, State: {:?}\n",
       id, maroon_task.description, maroon_task.state
     ));
   }
 
-  if active_tasks_copy.is_empty() {
+  if empty {
     response = String::from("No active tasks\n");
   }
 
@@ -638,38 +625,30 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         .and_then(|_| fsm.pending_operations.pop())
         .map(|t| (t.task_id, t.scheduled_timestamp))
     } {
-      let maroon_task = fsm
-        .active_tasks
-        .get(&task_id)
-        .cloned()
-        .expect("The task just retrieved from `fsm.pending_operations` should exist.");
+      let mut maroon_task =
+        fsm.active_tasks.remove(&task_id).expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-      let mut runtime = maroon_task.runtime.clone();
-      match global_step(maroon_task.state, &mut runtime) {
+      match global_step(maroon_task.state, &mut maroon_task.runtime) {
         MaroonStepResult::Done => {
           fsm.active_tasks.remove(&task_id);
         }
         MaroonStepResult::Next(new_state) => {
-          let maroon_task = fsm.active_tasks.get_mut(&task_id).unwrap();
           maroon_task.state = new_state;
-          maroon_task.runtime = runtime;
+          fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
         }
         MaroonStepResult::Sleep(sleep_ms, new_state) => {
           let scheduled_timestamp = scheduled_timestamp + sleep_ms;
-          let maroon_task = fsm.active_tasks.get_mut(&task_id).unwrap();
           maroon_task.state = new_state;
-          maroon_task.runtime = runtime;
           maroon_task.scheduled_timestamp = scheduled_timestamp;
+          fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
         }
         MaroonStepResult::Write(text, new_state) => {
           let _ = maroon_task.writer.write_text(text, Some(scheduled_timestamp)).await;
-          if let Some(maroon_task) = fsm.active_tasks.get_mut(&task_id) {
-            maroon_task.state = new_state;
-            maroon_task.runtime = runtime;
-            fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
-          }
+          maroon_task.state = new_state;
+          fsm.active_tasks.insert(task_id, maroon_task);
+          fsm.pending_operations.push(TimestampedMaroonTask { scheduled_timestamp, task_id });
         }
       }
     } else {
