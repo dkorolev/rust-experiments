@@ -10,9 +10,7 @@ use axum::{
 use clap::Parser;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::future::Future;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::{
@@ -49,29 +47,37 @@ impl Timer for WallTimeTimer {
 }
 
 trait Writer: Send + Sync + 'static {
-  // NOTE(dkorolev): Using `Arc<Self>` is a workaround to avoid the `Send` constraint.
-  // NOTE(dkorolev): I'd love this to be an `async fn`, but alas, does not play well with recursion and `axum`.
-  fn write_text(
-    self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>>;
+  async fn write_text(&self, text: String, timestamp: Option<LogicalTimeMs>) -> Result<(), Box<dyn std::error::Error>>
+  where
+    Self: Send;
 }
 
-#[derive(Clone)]
 struct WebSocketWriter {
-  socket: Arc<Mutex<WebSocket>>,
+  sender: mpsc::Sender<String>,
+  _task: tokio::task::JoinHandle<()>,
 }
 
 impl WebSocketWriter {
   fn new(socket: WebSocket) -> Self {
-    Self { socket: Arc::new(Mutex::new(socket)) }
+    let (sender, mut receiver) = mpsc::channel::<String>(100);
+    let mut socket = socket;
+
+    let task = tokio::spawn(async move {
+      while let Some(text) = receiver.recv().await {
+        let _ = socket.send(Message::Text(text.into())).await;
+      }
+    });
+
+    Self { sender, _task: task }
   }
 }
 
 impl Writer for WebSocketWriter {
-  fn write_text(
-    self: Arc<Self>, text: String, _timestamp: Option<LogicalTimeMs>,
-  ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
-    Box::pin(async move { self.socket.lock().await.send(Message::Text(text.into())).await })
+  async fn write_text(
+    &self, text: String, _timestamp: Option<LogicalTimeMs>,
+  ) -> Result<(), Box<dyn std::error::Error>> {
+    self.sender.send(text).await.map_err(Box::new)?;
+    Ok(())
   }
 }
 
@@ -342,33 +348,28 @@ fn ackermann(m: u64, n: u64) -> u64 {
   }
 }
 
-// NOTE(dkorolev): Even though the socket is "single-threaded", we still use a `Mutex` for now, because
-// the `on_upgrade` operation in `axum` for WebSocket-s assumes the execution may span thread boundaries.
-fn async_ack<W: Writer>(
-  w: Arc<W>, m: i64, n: i64, indent: usize,
-) -> Pin<Box<dyn Future<Output = Result<i64, axum::Error>> + Send>> {
-  Box::pin(async move {
-    let indentation = " ".repeat(indent);
-    if m == 0 {
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
-      Ok(n + 1)
-    } else {
-      Arc::clone(&w).write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
+async fn async_ack<W: Writer>(w: Arc<W>, m: i64, n: i64, indent: usize) -> Result<i64, Box<dyn std::error::Error>> {
+  let indentation = " ".repeat(indent);
+  if m == 0 {
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    w.write_text(format!("{indentation}ack({m},{n}) = {n} + 1"), None).await?;
+    Ok(n + 1)
+  } else {
+    w.write_text(format!("{}ack({m},{n}) ...", indentation), None).await?;
 
-      let r = match (m, n) {
-        (0, n) => n + 1,
-        (m, 0) => async_ack(Arc::clone(&w), m - 1, 1, indent + 2).await?,
-        (m, n) => {
-          async_ack(Arc::clone(&w), m - 1, async_ack(Arc::clone(&w), m, n - 1, indent + 2).await?, indent + 2).await?
-        }
-      };
+    let r = match (m, n) {
+      (0, n) => n + 1,
+      (m, 0) => Box::pin(async_ack(Arc::clone(&w), m - 1, 1, indent + 2)).await?,
+      (m, n) => {
+        let inner_result = Box::pin(async_ack(Arc::clone(&w), m, n - 1, indent + 2)).await?;
+        Box::pin(async_ack(Arc::clone(&w), m - 1, inner_result, indent + 2)).await?
+      }
+    };
 
-      tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-      w.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
-      Ok(r)
-    }
-  })
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    w.write_text(format!("{}ack({m},{n}) = {r}", indentation), None).await?;
+    Ok(r)
+  }
 }
 
 async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _state: Arc<AppState<T, WebSocketWriter>>) {
@@ -610,14 +611,14 @@ mod tests {
   }
 
   impl<T: Timer> Writer for MockWriter<T> {
-    fn write_text(
-      self: Arc<Self>, text: String, timestamp: Option<LogicalTimeMs>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), axum::Error>> + Send>> {
-      Box::pin(async move {
-        let time_to_use = timestamp.unwrap_or_else(|| self.timer.millis_since_start());
-        self.outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
-        Ok(())
-      })
+    async fn write_text(
+      &self, text: String, timestamp: Option<LogicalTimeMs>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+      let timer = Arc::clone(&self.timer);
+      let outputs = Arc::clone(&self.outputs);
+      let time_to_use = timestamp.unwrap_or_else(|| timer.millis_since_start());
+      outputs.lock().unwrap().push(format!("{time_to_use}ms:{text}"));
+      Ok(())
     }
   }
 
