@@ -1101,4 +1101,42 @@ mod tests {
 
     assert_eq!(expected, writer.get_outputs_as_string());
   }
+
+  #[tokio::test]
+  async fn test_factorial_task() {
+    let timer = Arc::new(MockTimer::new(0));
+    let (quit_tx, _) = mpsc::channel::<()>(1);
+    let mut app_state = Arc::new(AppState {
+      fsm: Arc::new(Mutex::new(MaroonRuntime {
+        task_id_generator: NextTaskIdGenerator::new(),
+        pending_operations: Default::default(),
+        active_tasks: Default::default(),
+      })),
+      quit_tx,
+      timer: Arc::clone(&timer),
+    });
+    let writer = Arc::new(MockWriter::new_with_timer(Arc::clone(&timer)));
+
+    app_state
+      .schedule(
+        Arc::clone(&writer),
+        MaroonTaskState::FactorialBegin,
+        MaroonTaskRuntime::Factorial(MaroonTaskRuntimeFactorial { n: 5, result: 0, next_multiplier: 0 }),
+        LogicalTimeAbsoluteMs::from_millis(0),
+        "Factorial of 5".to_string(),
+      )
+      .await;
+
+    timer.set_time(100);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let output_at_100 = writer.get_outputs_as_string();
+    assert_eq!(output_at_100, "0ms:4!:5");
+
+    timer.set_time(1000);
+    execute_pending_operations_inner(&mut app_state).await;
+
+    let output_at_1000 = writer.get_outputs_as_string();
+    assert_eq!(output_at_1000, "0ms:4!:5;200ms:3!:20;350ms:2!:60;450ms:1!:120;500ms:5!=120");
+  }
 }
