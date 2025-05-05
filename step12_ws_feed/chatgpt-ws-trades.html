@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>XBT/USD Trades</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      padding: 20px;
+      background: #fafafa;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      font-size: 1.5em;
+      background: white;
+    }
+    th, td {
+      padding: 8px 12px;
+      text-align: right;
+      border: 1px solid #ddd;
+    }
+    th {
+      background: #f0f0f0;
+      font-weight: normal;
+    }
+    .buy {
+      color: green;
+    }
+    .sell {
+      color: red;
+    }
+  </style>
+</head>
+<body>
+  <table>
+    <thead>
+      <tr>
+        <th>Price</th>
+        <th>Volume</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody id="trades">
+    </tbody>
+  </table>
+  <script>
+    const ws = new WebSocket("wss://ws.kraken.com/");
+    const trades = [];
+
+    ws.addEventListener("open", () => {
+      ws.send(JSON.stringify({
+        event: "subscribe",
+        pair: ["XBT/USD"],
+        subscription: { name: "trade" }
+      }));
+    });
+
+    ws.addEventListener("message", (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (Array.isArray(data) && data[2] === "trade" && data[3] === "XBT/USD") {
+          const newTrades = data[1];
+          for (const t of newTrades) {
+            const price = parseFloat(t[0]);
+            const volume = parseFloat(t[1]);
+            const side = t[3];
+            const total = (price * volume).toFixed(2);
+
+            trades.unshift({ price, volume, total, side });
+            if (trades.length > 10) trades.pop(); // Keep only last 10
+          }
+          renderTrades();
+        }
+      } catch (e) {
+        console.error("Error parsing message", e);
+      }
+    });
+
+    function renderTrades() {
+      const tradesEl = document.getElementById("trades");
+      tradesEl.innerHTML = trades.map(trade => `
+        <tr>
+          <td class="${trade.side === "b" ? "buy" : "sell"}">$${trade.price.toFixed(2)}</td>
+          <td>${trade.volume.toFixed(6)}</td>
+          <td>$${trade.total}</td>
+        </tr>
+      `).join('');
+    }
+  </script>
+</body>
+</html>
