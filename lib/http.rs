@@ -1,11 +1,11 @@
 use ammonia::clean;
 use askama::Template;
 use axum::response::{Html, IntoResponse, Response};
+use comrak::{markdown_to_html, ComrakOptions};
 use hyper::{
   header::{self, HeaderMap},
   StatusCode,
 };
-use pulldown_cmark::{html, Options, Parser};
 
 #[derive(Template)]
 #[template(path = "json.html", escape = "none")]
@@ -20,13 +20,13 @@ pub struct MarkdownHtmlTemplate<'a> {
 }
 
 pub fn render_markdown(input: &str) -> String {
-  let options = Options::empty();
+  let mut options = ComrakOptions::default();
+  options.extension.table = true;
+  options.extension.strikethrough = true;
+  options.extension.tasklist = true;
+  options.extension.footnotes = true;
 
-  let parser = Parser::new_ext(input, options);
-
-  let mut html_output = String::new();
-  html::push_html(&mut html_output, parser);
-
+  let html_output = markdown_to_html(input, &options);
   clean(&html_output)
 }
 
