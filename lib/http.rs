@@ -1,14 +1,33 @@
+use ammonia::clean;
 use askama::Template;
 use axum::response::{Html, IntoResponse, Response};
 use hyper::{
   header::{self, HeaderMap},
   StatusCode,
 };
+use pulldown_cmark::{html, Options, Parser};
 
 #[derive(Template)]
 #[template(path = "json.html", escape = "none")]
 pub struct DataHtmlTemplate<'a> {
   pub raw_json_as_string: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "markdown.html", escape = "none")]
+pub struct MarkdownHtmlTemplate<'a> {
+  pub rendered_markdown: &'a str,
+}
+
+pub fn render_markdown(input: &str) -> String {
+  let options = Options::empty();
+
+  let parser = Parser::new_ext(input, options);
+
+  let mut html_output = String::new();
+  html::push_html(&mut html_output, parser);
+
+  clean(&html_output)
 }
 
 pub async fn json_or_html(headers: HeaderMap, raw_json_as_string: &str) -> impl IntoResponse {
@@ -23,6 +42,24 @@ pub async fn json_or_html(headers: HeaderMap, raw_json_as_string: &str) -> impl 
       .status(StatusCode::OK)
       .header("content-type", "application/json")
       .body(raw_json_as_string.to_string())
+      .unwrap()
+      .into_response()
+  }
+}
+
+pub async fn markdown_or_html(headers: HeaderMap, raw_markdown: &str) -> impl IntoResponse {
+  if accept_header_contains_text_html(&headers) {
+    let rendered = render_markdown(raw_markdown);
+    let template = MarkdownHtmlTemplate { rendered_markdown: &rendered };
+    match template.render() {
+      Ok(html) => Html(html).into_response(),
+      Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+  } else {
+    Response::builder()
+      .status(StatusCode::OK)
+      .header("content-type", "text/markdown")
+      .body(raw_markdown.to_string())
       .unwrap()
       .into_response()
   }

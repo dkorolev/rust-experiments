@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markdown</title>
+  <link href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4v5QBAARLAaU/Dnq2AAAAAElFTkSuQmCC" rel="icon" type="image/x-icon" />
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #282c34;
+      color: white;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+      color: #61dafb;
+      margin-top: 24px;
+      margin-bottom: 16px;
+    }
+    
+    h1 {
+      font-size: 2em;
+      border-bottom: 1px solid #444;
+      padding-bottom: 0.3em;
+    }
+    
+    h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid #444;
+      padding-bottom: 0.3em;
+    }
+    
+    a {
+      color: #9cdcfe;
+      text-decoration: none;
+    }
+    
+    a:hover {
+      text-decoration: underline;
+    }
+    
+    code {
+      font-family: 'Courier New', Courier, monospace;
+      background-color: #1e1e1e;
+      padding: 0.2em 0.4em;
+      border-radius: 3px;
+      font-size: 85%;
+    }
+    
+    pre {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    
+    pre code {
+      padding: 0;
+      background-color: transparent;
+    }
+    
+    blockquote {
+      padding: 0 1em;
+      color: #aaa;
+      border-left: 0.25em solid #444;
+    }
+    
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 16px 0;
+    }
+    
+    table th, table td {
+      border: 1px solid #444;
+      padding: 8px 12px;
+    }
+    
+    table th {
+      background-color: #1e1e1e;
+    }
+    
+    img {
+      max-width: 100%;
+    }
+    
+    ul, ol {
+      padding-left: 2em;
+    }
+    
+    strong {
+      color: #e5c07b;
+    }
+    
+    em {
+      color: #c678dd;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="markdown-content">
+    {{ rendered_markdown|safe }}
+  </div>
+</body>
+
+</html> 
