@@ -8,6 +8,7 @@ use tokio::{
 };
 
 const SAMPLE_JSON: &str = include_str!("sample.json");
+const SAMPLE_MARKDOWN: &str = include_str!("demo.md");
 
 mod lib {
   pub mod http;
@@ -16,6 +17,10 @@ use crate::lib::http;
 
 async fn json_handler(headers: HeaderMap) -> impl IntoResponse {
   http::json_or_html(headers, SAMPLE_JSON).await
+}
+
+async fn markdown_handler(headers: HeaderMap) -> impl IntoResponse {
+  http::markdown_or_html(headers, SAMPLE_MARKDOWN).await
 }
 
 #[tokio::main]
@@ -35,7 +40,8 @@ async fn main() {
         }
       }),
     )
-    .route("/json", get(json_handler));
+    .route("/json", get(json_handler))
+    .route("/markdown", get(markdown_handler));
 
   let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
   let listener = TcpListener::bind(addr).await.unwrap();

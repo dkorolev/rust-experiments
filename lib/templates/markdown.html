@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Markdown</title>
+  <link href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4v5QBAARLAaU/Dnq2AAAAAElFTkSuQmCC" rel="icon" type="image/x-icon" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background-color: #282c34;
+      color: white;
+      padding: 20px;
+      max-width: 800px;
+      margin: 0 auto;
+      line-height: 1.6;
+    }
+    
+    h1, h2, h3, h4, h5, h6 {
+      color: #61dafb;
+      margin-top: 24px;
+      margin-bottom: 16px;
+    }
+    
+    h1 {
+      font-size: 2em;
+      border-bottom: 1px solid #444;
+      padding-bottom: 0.3em;
+    }
+    
+    h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid #444;
+      padding-bottom: 0.3em;
+    }
+    
+    a {
+      color: #9cdcfe;
+      text-decoration: none;
+    }
+    
+    a:hover {
+      text-decoration: underline;
+    }
+    
+    code {
+      font-family: 'Courier New', Courier, monospace;
+      background-color: #1e1e1e;
+      padding: 0.2em 0.4em;
+      border-radius: 3px;
+      font-size: 85%;
+    }
+    
+    pre {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      overflow-x: auto;
+      margin: 16px 0;
+    }
+    
+    pre code {
+      padding: 0;
+      background-color: transparent;
+    }
+    
+    blockquote {
+      padding: 0 1em;
+      color: #aaa;
+      border-left: 0.25em solid #444;
+    }
+    
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 16px 0;
+    }
+    
+    table th, table td {
+      border: 1px solid #444;
+      padding: 8px 12px;
+    }
+    
+    table th {
+      background-color: #1e1e1e;
+    }
+    
+    img {
+      max-width: 100%;
+    }
+    
+    ul, ol {
+      padding-left: 2em;
+    }
+    
+    strong {
+      color: #e5c07b;
+    }
+    
+    em {
+      color: #c678dd;
+    }
+
+    .mermaid {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      margin: 16px 0;
+      text-align: center;
+    }
+
+    .language-mermaid {
+      display: none;
+    }
+
+    .mermaid-container {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      margin: 16px 0;
+      text-align: center;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="markdown-content">
+    {{ rendered_markdown|safe }}
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Configure mermaid
+      mermaid.initialize({
+        theme: 'dark',
+        securityLevel: 'loose',
+        fontFamily: 'monospace',
+        startOnLoad: false
+      });
+
+      // Find all pre elements
+      const preElements = document.querySelectorAll('pre');
+      preElements.forEach((preElement, index) => {
+        // Get the code element inside
+        const codeElement = preElement.querySelector('code');
+        if (!codeElement) return;
+        
+        // Check if it's a mermaid block
+        // First try the class
+        const isMermaid = codeElement.classList.contains('language-mermaid');
+        // Or check if the first line says mermaid
+        const firstLine = codeElement.textContent.trim().split('\n')[0].trim();
+        const startsWithMermaid = firstLine === 'mermaid' || 
+                                 firstLine === 'graph' || 
+                                 firstLine === 'sequenceDiagram' || 
+                                 firstLine.startsWith('flowchart') ||
+                                 firstLine === 'gantt' || 
+                                 firstLine === 'classDiagram';
+        
+        if (isMermaid || startsWithMermaid) {
+          // Get the diagram code
+          let diagramCode = codeElement.textContent;
+          
+          // Create a div for the mermaid diagram
+          const mermaidDiv = document.createElement('div');
+          mermaidDiv.className = 'mermaid-container';
+          mermaidDiv.id = 'mermaid-diagram-' + index;
+          
+          // Replace the pre element with our mermaid container
+          preElement.parentNode.replaceChild(mermaidDiv, preElement);
+          
+          // Create a div with the mermaid class
+          const mermaidContentDiv = document.createElement('div');
+          mermaidContentDiv.className = 'mermaid';
+          mermaidContentDiv.textContent = diagramCode;
+          mermaidDiv.appendChild(mermaidContentDiv);
+          
+          // Let mermaid process it
+          try {
+            window.setTimeout(() => {
+              mermaid.init(undefined, mermaidContentDiv);
+            }, 0);
+          } catch (error) {
+            console.error('Error processing diagram:', error);
+            mermaidDiv.innerHTML = '<div class="error">Error processing diagram</div>';
+          }
+        }
+      });
+    });
+  </script>
+</body>
+
+</html> 
