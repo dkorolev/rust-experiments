@@ -13,7 +13,7 @@ Hello, I am an example **Markdown** (`*.md`) file!
 
 ## Mermaid Diagram
 
-```
+```mermaid
 flowchart TD
     A[Start] --> B{Is it working?}
     B -->|Yes| C[Great!]
@@ -24,7 +24,7 @@ flowchart TD
 
 ## Sequence Diagram
 
-```
+```mermaid
 sequenceDiagram
     participant Browser
     participant Server
@@ -37,7 +37,7 @@ sequenceDiagram
 
 ## Class Diagram
 
-```
+```mermaid
 classDiagram
     class Animal {
         +name: string
