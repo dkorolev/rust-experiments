@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Markdown</title>
   <link href="data:image/x-icon;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4v5QBAARLAaU/Dnq2AAAAAElFTkSuQmCC" rel="icon" type="image/x-icon" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 
   <style>
     body {
@@ -102,6 +103,26 @@
     em {
       color: #c678dd;
     }
+
+    .mermaid {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      margin: 16px 0;
+      text-align: center;
+    }
+
+    .language-mermaid {
+      display: none;
+    }
+
+    .mermaid-container {
+      background-color: #1e1e1e;
+      padding: 16px;
+      border-radius: 5px;
+      margin: 16px 0;
+      text-align: center;
+    }
   </style>
 </head>
 
@@ -109,6 +130,67 @@
   <div class="markdown-content">
     {{ rendered_markdown|safe }}
   </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Configure mermaid
+      mermaid.initialize({
+        theme: 'dark',
+        securityLevel: 'loose',
+        fontFamily: 'monospace',
+        startOnLoad: false
+      });
+
+      // Find all pre elements
+      const preElements = document.querySelectorAll('pre');
+      preElements.forEach((preElement, index) => {
+        // Get the code element inside
+        const codeElement = preElement.querySelector('code');
+        if (!codeElement) return;
+        
+        // Check if it's a mermaid block
+        // First try the class
+        const isMermaid = codeElement.classList.contains('language-mermaid');
+        // Or check if the first line says mermaid
+        const firstLine = codeElement.textContent.trim().split('\n')[0].trim();
+        const startsWithMermaid = firstLine === 'mermaid' || 
+                                 firstLine === 'graph' || 
+                                 firstLine === 'sequenceDiagram' || 
+                                 firstLine.startsWith('flowchart') ||
+                                 firstLine === 'gantt' || 
+                                 firstLine === 'classDiagram';
+        
+        if (isMermaid || startsWithMermaid) {
+          // Get the diagram code
+          let diagramCode = codeElement.textContent;
+          
+          // Create a div for the mermaid diagram
+          const mermaidDiv = document.createElement('div');
+          mermaidDiv.className = 'mermaid-container';
+          mermaidDiv.id = 'mermaid-diagram-' + index;
+          
+          // Replace the pre element with our mermaid container
+          preElement.parentNode.replaceChild(mermaidDiv, preElement);
+          
+          // Create a div with the mermaid class
+          const mermaidContentDiv = document.createElement('div');
+          mermaidContentDiv.className = 'mermaid';
+          mermaidContentDiv.textContent = diagramCode;
+          mermaidDiv.appendChild(mermaidContentDiv);
+          
+          // Let mermaid process it
+          try {
+            window.setTimeout(() => {
+              mermaid.init(undefined, mermaidContentDiv);
+            }, 0);
+          } catch (error) {
+            console.error('Error processing diagram:', error);
+            mermaidDiv.innerHTML = '<div class="error">Error processing diagram</div>';
+          }
+        }
+      });
+    });
+  </script>
 </body>
 
 </html> 
