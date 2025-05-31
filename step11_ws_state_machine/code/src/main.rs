@@ -180,6 +180,7 @@ impl Writer for WebSocketWriter {
 #[derive(Clone, Debug)]
 enum MaroonTaskState {
   Completed,
+  /*
   DelayedMessageTaskBegin,
   DelayedMessageTaskExecute,
   DivisorsTaskBegin,
@@ -189,21 +190,82 @@ enum MaroonTaskState {
   FibonacciTaskCalculate,
   FibonacciTaskResult,
   FibonacciTaskStep,
-  FactorialBegin,
-  FactorialRecursion,
+  */
+  FactorialEntry,
+  FactorialRecursiveCall,
   FactorialRecursionPostWrite,
   FactorialRecursionPostSleep,
-  FactorialReturn,
+  FactorialRecursionPostRecursiveCall,
+  FactorialDone,
 }
 
+/*
+// TODO(dkorolev): This `MaroonTaskRuntime` will soon be deprecated. Everything will be of "state" `Generic` first,
+// and then `TaskRuntime` will no longer be needed, in favor of "passive" (stateless) "state" as a plain enum,
+// plus the [maroon] stack, plus the [maroon] heap.
+// TODO(dkorolev): In this commit, refactoring begins with Factorial.
 #[derive(Debug)]
 enum MaroonTaskRuntime {
+  Generic,
   DelayedMessage(MaroonTaskRuntimeDelayedMessage),
   Divisors(MaroonTaskRuntimeDivisors),
   Fibonacci(MaroonTaskRuntimeFibonacci),
-  Factorial(MaroonTaskRuntimeFactorial),
+}
+*/
+
+// NOTE(dkorolev): These dedicated types are easier for manual development.
+// NOTE(dkorolev): They will all be "type-erased" later on, esp. once we get to the DSL part.
+#[derive(Debug, Clone)]
+enum MaroonTaskStackEntryValue {
+  FactorialInput(u64),
+  FactorialArgument(u64),
+  FactorialReturnValue(u64),
 }
 
+// For a given state, how many entries on the maroon stack right below ("above") this state are its stack variables.
+// TODO(dkorolev): For now we can (should?) example the contents of the stack manually, this is not done yet.
+// NOTE(dkorolev): Can probably be done better wrt encoding which types they should be, not just the count.
+const fn maroon_task_state_local_vars_count(e: &MaroonTaskState) -> usize {
+  match e {
+    MaroonTaskState::FactorialEntry => 1,                      // [FactorialInput]
+    MaroonTaskState::FactorialRecursiveCall => 1,              // [FactorialArgument]
+    MaroonTaskState::FactorialRecursionPostWrite => 1,         // [FactorialArgument]
+    MaroonTaskState::FactorialRecursionPostSleep => 1,         // [FactorialArgument]
+    MaroonTaskState::FactorialRecursionPostRecursiveCall => 2, // [FactorialArgument, FactorialReturnValue]
+    MaroonTaskState::FactorialDone => 2,                       // [FactorialInput, FactorialReturnValue]
+    _ => 0,
+  }
+}
+
+// NOTE(dkorolev): The convention so far is the following:
+// * The "last" element of the stack is the state of the task.
+// * It is known up front how many entries before this state are its "local variables", including parameters.
+// * This known mapping is effectively hard-coded. It will come from the DSL later on.
+#[derive(Debug, Clone)]
+enum MaroonTaskStackEntry {
+  // The state to execute next, linearly.
+  State(MaroonTaskState),
+  // The state to return to on `Return`, with the stack populated with the return value.
+  Retrn(MaroonTaskState),
+  // The value, all `u64`-s for now, but strongly typed for simplicity of the demo.
+  Value(MaroonTaskStackEntryValue),
+}
+
+#[derive(Debug)]
+struct MaroonTaskStack {
+  maroon_stack_entries: Vec<MaroonTaskStackEntry>,
+}
+
+// NOTE(dkorolev): Empty for now. =)
+struct MaroonTaskHeap {}
+
+impl MaroonTaskHeap {
+  fn empty() -> Self {
+    Self {}
+  }
+}
+
+/*
 #[derive(Clone, Debug)]
 struct MaroonTaskRuntimeDelayedMessage {
   delay: LogicalTimeAbsoluteMs,
@@ -224,13 +286,7 @@ struct MaroonTaskRuntimeFibonacci {
   b: u64,
   delay_ms: LogicalTimeDeltaMs,
 }
-
-#[derive(Clone, Debug)]
-struct MaroonTaskRuntimeFactorial {
-  n: u64,
-  result: u64,
-  next_multiplier: u64, // NOTE(dkorolev): This should eventually be on the stack.
-}
+*/
 
 #[cfg(not(test))]
 fn format_delayed_message(sleep_ms: LogicalTimeAbsoluteMs, message: &str) -> String {
@@ -255,16 +311,6 @@ fn format_fibonacci_step(n: u64, index: u64, a: u64, _b: u64) -> String {
 #[cfg(not(test))]
 fn format_fibonacci_result(n: u64, result: u64) -> String {
   format!("Fibonacci[{n}] = {result}")
-}
-
-#[cfg(not(test))]
-fn format_intermediate_factorial_result(n: u64, result: u64) -> String {
-  format!("IntermediateFactorial({n}) = {result}.")
-}
-
-#[cfg(not(test))]
-fn format_factorial_result(n: u64, result: u64) -> String {
-  format!("Factorial({n}) = {result}.")
 }
 
 #[cfg(test)]
@@ -292,33 +338,24 @@ fn format_fibonacci_result(n: u64, result: u64) -> String {
   format!("fib{n}={result}")
 }
 
-#[cfg(test)]
-fn format_intermediate_factorial_result(n: u64, result: u64) -> String {
-  format!("{n}!:{result}")
-}
-
-#[cfg(test)]
-fn format_factorial_result(n: u64, result: u64) -> String {
-  format!("{n}!={result}")
-}
-
+// TODO(dkorolev): Do not copy "stack vars" back and forth.
+#[derive(Debug)]
 enum MaroonStepResult {
   Done,
-  Next(MaroonTaskState),
-  Sleep(LogicalTimeDeltaMs, MaroonTaskState),
-  Write(String, MaroonTaskState),
-  // NOTE(dkorolev): Go with an autogenerated set of types here? Might be legit.
-  CallU64(MaroonTaskState, u64, MaroonTaskState),
-  ReturnU64(u64),
+  Next(Vec<MaroonTaskStackEntry>),
+  Sleep(LogicalTimeDeltaMs, Vec<MaroonTaskStackEntry>),
+  Write(String, Vec<MaroonTaskStackEntry>),
+  Return(MaroonTaskStackEntryValue),
 }
 
-fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: MaroonContextValue) -> MaroonStepResult {
+fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> MaroonStepResult {
   match state {
+    /*
     MaroonTaskState::DelayedMessageTaskBegin => {
       if let MaroonTaskRuntime::DelayedMessage(data) = runtime {
         MaroonStepResult::Sleep(
           LogicalTimeDeltaMs::from_millis(data.delay.as_millis()),
-          MaroonTaskState::DelayedMessageTaskExecute,
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskExecute)],
         )
       } else {
         panic!("Runtime type mismatch for `DelayedMessageTaskBegin`.");
@@ -326,7 +363,10 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
     }
     MaroonTaskState::DelayedMessageTaskExecute => {
       if let MaroonTaskRuntime::DelayedMessage(data) = runtime {
-        MaroonStepResult::Write(format_delayed_message(data.delay, &data.message), MaroonTaskState::Completed)
+        MaroonStepResult::Write(
+          format_delayed_message(data.delay, &data.message),
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+        )
       } else {
         panic!("Runtime type mismatch for `DelayedMessageTaskExecute`.");
       }
@@ -334,7 +374,7 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
     MaroonTaskState::DivisorsTaskBegin => {
       if let MaroonTaskRuntime::Divisors(data) = runtime {
         data.i = data.n;
-        MaroonStepResult::Next(MaroonTaskState::DivisorsTaskIteration)
+        MaroonStepResult::OldNext(MaroonTaskState::DivisorsTaskIteration)
       } else {
         panic!("Runtime type mismatch for `DivisorsTaskBegin`.");
       }
@@ -346,10 +386,16 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
           i -= 1;
         }
         if i == 0 {
-          MaroonStepResult::Write(format_divisors_done(data.n), MaroonTaskState::Completed)
+          MaroonStepResult::Write(
+            format_divisors_done(data.n),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+          )
         } else {
           data.i = i;
-          MaroonStepResult::Sleep(LogicalTimeDeltaMs::from_millis(i * 10), MaroonTaskState::DivisorsPrintAndMoveOn)
+          MaroonStepResult::Sleep(
+            LogicalTimeDeltaMs::from_millis(i * 10),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsPrintAndMoveOn)],
+          )
         }
       } else {
         panic!("Runtime type mismatch for `DivisorsTaskIteration`.");
@@ -357,8 +403,10 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
     }
     MaroonTaskState::DivisorsPrintAndMoveOn => {
       if let MaroonTaskRuntime::Divisors(data) = runtime {
-        let result =
-          MaroonStepResult::Write(format_divisor_found(data.n, data.i), MaroonTaskState::DivisorsTaskIteration);
+        let result = MaroonStepResult::Write(
+          format_divisor_found(data.n, data.i),
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskIteration)],
+        );
         data.i -= 1;
         result
       } else {
@@ -368,12 +416,15 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
     MaroonTaskState::FibonacciTaskBegin => {
       if let MaroonTaskRuntime::Fibonacci(data) = runtime {
         if data.n <= 1 {
-          MaroonStepResult::Write(format_fibonacci_result(data.n, data.n), MaroonTaskState::Completed)
+          MaroonStepResult::Write(
+            format_fibonacci_result(data.n, data.n),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+          )
         } else {
           data.index = 1;
           data.a = 0;
           data.b = 1;
-          MaroonStepResult::Next(MaroonTaskState::FibonacciTaskCalculate)
+          MaroonStepResult::OldNext(MaroonTaskState::FibonacciTaskCalculate)
         }
       } else {
         panic!("Runtime type mismatch for `FibonacciTaskBegin`.");
@@ -382,13 +433,13 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
     MaroonTaskState::FibonacciTaskCalculate => {
       if let MaroonTaskRuntime::Fibonacci(data) = runtime {
         if data.index >= data.n {
-          MaroonStepResult::Next(MaroonTaskState::FibonacciTaskResult)
+          MaroonStepResult::OldNext(MaroonTaskState::FibonacciTaskResult)
         } else {
           let delay = 5 * data.index;
           data.delay_ms = LogicalTimeDeltaMs::from_millis(delay);
           MaroonStepResult::Write(
             format_fibonacci_step(data.n, data.index, data.b, data.a),
-            MaroonTaskState::FibonacciTaskStep,
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskStep)],
           )
         }
       } else {
@@ -403,83 +454,110 @@ fn global_step(state: MaroonTaskState, runtime: &mut MaroonTaskRuntime, ctx: Mar
         data.index = next_index;
         data.a = next_a;
         data.b = next_b;
-        MaroonStepResult::Sleep(data.delay_ms, MaroonTaskState::FibonacciTaskCalculate)
+        MaroonStepResult::Sleep(
+          data.delay_ms,
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskCalculate)],
+        )
       } else {
         panic!("Runtime type mismatch for `FibonacciTaskStep`.");
       }
     }
     MaroonTaskState::FibonacciTaskResult => {
       if let MaroonTaskRuntime::Fibonacci(data) = runtime {
-        MaroonStepResult::Write(format_fibonacci_result(data.n, data.b), MaroonTaskState::Completed)
+        MaroonStepResult::Write(
+          format_fibonacci_result(data.n, data.b),
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+        )
       } else {
         panic!("Runtime type mismatch for `FibonacciTaskResult`.");
       }
     }
-    // Factorial is effectively: `fac(i) { i > 1 ? i * fac(i-1) : 1 }`.
-    // NOTE(dkorolev): We do not have a proper "on-stack" variables though, but this is a v0.1.
-    MaroonTaskState::FactorialBegin => {
-      if let MaroonTaskRuntime::Factorial(data) = runtime {
-        data.result = 1;
-        data.next_multiplier = data.n;
-        MaroonStepResult::CallU64(
-          MaroonTaskState::FactorialRecursion,
-          data.next_multiplier,
-          MaroonTaskState::FactorialReturn,
-        )
+    */
+    MaroonTaskState::FactorialEntry => {
+      if let Some(MaroonTaskStackEntryValue::FactorialInput(n)) = vars.get(0) {
+        let n = *n;
+        MaroonStepResult::Next(vec![
+          // This input should be preserved on the stack when `Retrn` takes place.
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialInput(n)),
+          // This is the state to `Return` to.
+          MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialDone),
+          // This the argument to the function, which is the state right below this one.
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+          // And this is the function to be called, which will ultimately `Return` into `FactorialDone`.
+          MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursiveCall),
+        ])
       } else {
-        panic!("Runtime type mismatch for `FactorialBegin`.");
+        panic!("Unexpected argument 0 type in `FactorialEntry`: `{:?}`.", vars.get(0));
       }
     }
-    MaroonTaskState::FactorialRecursion => {
-      if let MaroonTaskRuntime::Factorial(data) = runtime {
-        if let MaroonContextValue::U64(n) = ctx {
-          data.result *= n;
-          data.next_multiplier = n - 1;
-          MaroonStepResult::Write(
-            format_intermediate_factorial_result(data.next_multiplier, data.result),
-            MaroonTaskState::FactorialRecursionPostWrite,
-          )
-        } else {
-          panic!("Unexpected argument type in `FactorialRecursion`.");
-        }
+    MaroonTaskState::FactorialRecursiveCall => {
+      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
+        let n = *n;
+        MaroonStepResult::Write(
+          format!("f({n})"),
+          // TODO(dkorolev): This `vars` argument should be a helper accessor, to prevent these unnecessary `move`-s.
+          vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostWrite),
+          ],
+        )
       } else {
-        panic!("Runtime type mismatch for `FactorialRecursion`.");
+        panic!("Unexpected argument 0 type in `FactorialRecursiveCall`: `{:?}`.", vars.get(0));
       }
     }
     MaroonTaskState::FactorialRecursionPostWrite => {
-      if let MaroonTaskRuntime::Factorial(data) = runtime {
+      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
+        let n = *n;
         MaroonStepResult::Sleep(
-          LogicalTimeDeltaMs::from_millis(data.next_multiplier * 50),
-          MaroonTaskState::FactorialRecursionPostSleep,
+          LogicalTimeDeltaMs::from_millis(n * 50),
+          vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostSleep),
+          ],
         )
       } else {
-        panic!("Runtime type mismatch for `FactorialRecursionPostWrite`.");
+        panic!("Unexpected argument 0 type in `FactorialRecursionPostWrite`: `{:?}`.", vars.get(0));
       }
     }
     MaroonTaskState::FactorialRecursionPostSleep => {
-      if let MaroonTaskRuntime::Factorial(data) = runtime {
-        MaroonStepResult::ReturnU64(data.next_multiplier)
-      } else {
-        panic!("Runtime type mismatch for `FactorialRecursionPostSleep`.");
-      }
-    }
-    MaroonTaskState::FactorialReturn => {
-      if let MaroonTaskRuntime::Factorial(data) = runtime {
-        if let MaroonContextValue::U64(v) = ctx {
-          if v > 1 {
-            MaroonStepResult::CallU64(
-              MaroonTaskState::FactorialRecursion,
-              data.next_multiplier,
-              MaroonTaskState::FactorialReturn,
-            )
-          } else {
-            MaroonStepResult::Write(format_factorial_result(data.n, data.result), MaroonTaskState::Completed)
-          }
+      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
+        let n = *n;
+        if n > 1 {
+          MaroonStepResult::Next(vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+            MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialRecursionPostRecursiveCall),
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n - 1)),
+            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursiveCall),
+          ])
         } else {
-          panic!("Should have a return value in `FactorialReturn`.");
+          MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(1))
         }
       } else {
-        panic!("Runtime type mismatch for `FactorialReturn`.");
+        panic!("Unexpected argument 0 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(0));
+      }
+    }
+    MaroonTaskState::FactorialRecursionPostRecursiveCall => {
+      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(1) {
+        let n = *n;
+        if let Some(MaroonTaskStackEntryValue::FactorialReturnValue(a)) = vars.get(0) {
+          let a = *a;
+          MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(a * n))
+        } else {
+          panic!("Unexpected argument 0 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(1));
+        }
+      } else {
+        panic!("Unexpected argument 1 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(0));
+      }
+    }
+    MaroonTaskState::FactorialDone => {
+      if let Some(MaroonTaskStackEntryValue::FactorialReturnValue(r)) = vars.get(0) {
+        if let Some(MaroonTaskStackEntryValue::FactorialInput(n)) = vars.get(1) {
+          MaroonStepResult::Write(format!("{n}!={r}"), vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)])
+        } else {
+          panic!("Unexpected argument 1 type in `FactorialDone`.");
+        }
+      } else {
+        panic!("Unexpected argument 0 type in `FactorialDone`.");
       }
     }
     MaroonTaskState::Completed => MaroonStepResult::Done,
@@ -494,48 +572,31 @@ struct AppState<T: Timer, W: Writer> {
 
 impl<T: Timer, W: Writer> AppState<T, W> {
   async fn schedule(
-    &self, writer: Arc<W>, state: MaroonTaskState, runtime: MaroonTaskRuntime,
+    &self, writer: Arc<W>, maroon_stack: MaroonTaskStack, maroon_heap: MaroonTaskHeap,
     scheduled_timestamp: LogicalTimeAbsoluteMs, task_description: String,
   ) {
     let mut fsm = self.fsm.lock().await;
     let task_id = fsm.task_id_generator.next_task_id();
-
-    fsm
-      .active_tasks
-      .insert(task_id, MaroonTask { description: task_description, runtime, writer, call_stack: vec![state] });
-    fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
+    fsm.active_tasks.insert(task_id, MaroonTask { description: task_description, writer, maroon_stack, maroon_heap });
+    fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id))
   }
 }
 
 struct MaroonTask<W: Writer> {
   description: String,
-  runtime: MaroonTaskRuntime,
   writer: Arc<W>,
-  call_stack: Vec<MaroonTaskState>,
-}
-
-// NOTE(dkorolev): Go with an autogenerated set of types here? Might be legit.
-enum MaroonContextValue {
-  None, // NOTE(dkorolev): Could pass in task ID for journaling purposes, need to chat about this with the Maroon Crew!
-  U64(u64),
+  maroon_stack: MaroonTaskStack,
+  maroon_heap: MaroonTaskHeap,
 }
 
 struct TimestampedMaroonTask {
   scheduled_timestamp: LogicalTimeAbsoluteMs,
   task_id: MaroonTaskId,
-  ctx: MaroonContextValue,
 }
 
 impl TimestampedMaroonTask {
   fn new(scheduled_timestamp: LogicalTimeAbsoluteMs, task_id: MaroonTaskId) -> Self {
-    Self { scheduled_timestamp, task_id, ctx: MaroonContextValue::None }
-  }
-  // For function calls and `return`-s.
-  // NOTE(dkorolev): This can be done better.
-  fn new_with_context_value(
-    scheduled_timestamp: LogicalTimeAbsoluteMs, task_id: MaroonTaskId, ctx: MaroonContextValue,
-  ) -> Self {
-    Self { scheduled_timestamp, task_id, ctx: ctx }
+    Self { scheduled_timestamp, task_id }
   }
 }
 
@@ -620,14 +681,21 @@ async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _stat
   let _ = async_ack(Arc::new(WebSocketWriter::new(socket)), m, n, 0).await;
 }
 
+/*
 async fn delay_handler<T: Timer>(
-  ws: WebSocketUpgrade, Path((t, s)): Path<(u64, String)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade,
+  Path((t, s)): Path<(u64, String)>,
+  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| delay_handler_ws(socket, state.timer.millis_since_start(), t, s, state))
 }
 
 async fn delay_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeAbsoluteMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket,
+  ts: LogicalTimeAbsoluteMs,
+  t: u64,
+  s: String,
+  state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   let runtime = MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
     delay: LogicalTimeAbsoluteMs::from_millis(t),
@@ -637,8 +705,8 @@ async fn delay_handler_ws<T: Timer>(
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskState::DelayedMessageTaskBegin,
-      runtime,
+      MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
+      MaroonTaskHeap::empty(),
       ts,
       format!("Delayed by {}ms: `{}`.", t, s),
     )
@@ -646,21 +714,26 @@ async fn delay_handler_ws<T: Timer>(
 }
 
 async fn divisors_handler<T: Timer>(
-  ws: WebSocketUpgrade, Path(a): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade,
+  Path(a): Path<u64>,
+  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| divisors_handler_ws(socket, state.timer.millis_since_start(), a, state))
 }
 
 async fn divisors_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket,
+  ts: LogicalTimeAbsoluteMs,
+  n: u64,
+  state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   let runtime = MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n, i: n });
 
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskState::DivisorsTaskBegin,
-      runtime,
+      MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
+      MaroonTaskHeap::empty(),
       ts,
       format!("Divisors of {}", n),
     )
@@ -668,13 +741,18 @@ async fn divisors_handler_ws<T: Timer>(
 }
 
 async fn fibonacci_handler<T: Timer>(
-  ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade,
+  Path(n): Path<u64>,
+  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
 }
 
 async fn fibonacci_handler_ws<T: Timer>(
-  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket,
+  ts: LogicalTimeAbsoluteMs,
+  n: u64,
+  state: Arc<AppState<T, WebSocketWriter>>,
 ) {
   let runtime = MaroonTaskRuntime::Fibonacci(MaroonTaskRuntimeFibonacci {
     n,
@@ -683,17 +761,17 @@ async fn fibonacci_handler_ws<T: Timer>(
     b: 0,
     delay_ms: LogicalTimeDeltaMs::from_millis(0),
   });
-
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskState::FibonacciTaskBegin,
-      runtime,
+      MaroonTaskStack::new(MaroonTaskState::FibonacciTaskBegin),
+      MaroonTaskHeap::empty(),
       ts,
       format!("Fibonacci number {n}"),
     )
     .await;
 }
+*/
 
 async fn factorial_handler<T: Timer>(
   ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
@@ -704,17 +782,16 @@ async fn factorial_handler<T: Timer>(
 async fn factorial_handler_ws<T: Timer>(
   socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
-  let runtime = MaroonTaskRuntime::Factorial(MaroonTaskRuntimeFactorial {
-    n,
-    result: 0,          // NOTE(dkorolev): Will get changed to `1` right away.
-    next_multiplier: 0, // NOTE(dkorolev): To remove.
-  });
-
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskState::FactorialBegin,
-      runtime,
+      MaroonTaskStack {
+        maroon_stack_entries: vec![
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialInput(n)),
+          MaroonTaskStackEntry::State(MaroonTaskState::FactorialEntry),
+        ],
+      },
+      MaroonTaskHeap::empty(),
       ts,
       format!("Factorial of {n}"),
     )
@@ -731,9 +808,10 @@ async fn state_handler<T: Timer, W: Writer>(State(state): State<Arc<AppState<T, 
 
   for (id, maroon_task) in state.fsm.lock().await.active_tasks.iter() {
     empty = false;
+    // TODO(dkorolev): Add the `heap` here as well.
     response.push_str(&format!(
       "Task ID: {}, Description: {}, Stack: {:?}\n",
-      id, maroon_task.description, maroon_task.call_stack,
+      id, maroon_task.description, maroon_task.maroon_stack,
     ));
   }
 
@@ -758,11 +836,44 @@ async fn execute_pending_operations<T: Timer, W: Writer>(mut state: Arc<AppState
   }
 }
 
+// TODO(dkorolev): Should check the entire stack! Not just its topmost entry.
+fn unused_validate_states_vec_or_panic(new_states_vec: &Vec<MaroonTaskStackEntry>) {
+  let n = new_states_vec.len();
+  if n == 0 {
+    panic!("In `validate_states_vec_or_panic` the `new_states_vec` should not be empty.");
+  } else {
+    if let MaroonTaskStackEntry::State(new_state) = &new_states_vec[0] {
+      if n != maroon_task_state_local_vars_count(&new_state) + 1 {
+        panic!(
+          "In `validate_states_vec_or_panic` expecting {} arguments for state {new_state:?}, seeing {}.",
+          maroon_task_state_local_vars_count(&new_state),
+          n - 1
+        );
+      }
+      for i in 1..n {
+        if let MaroonTaskStackEntry::Value(_) = &new_states_vec[i] {
+          // OK
+        } else {
+          panic!(
+            "In `validate_states_vec_or_panic` expecting value, for non-value, pls examine `{:?}`.",
+            new_states_vec
+          );
+        }
+      }
+    } else {
+      panic!(
+        "In `validate_states_vec_or_panic` the `new_states_vec[0]` should not a state, not {:?}.",
+        new_states_vec[0]
+      );
+    }
+  }
+}
+
 async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<AppState<T, W>>) {
   loop {
     let mut fsm = state.fsm.lock().await;
     let scheduled_timestamp_cutoff: LogicalTimeAbsoluteMs = state.timer.millis_since_start();
-    if let Some((task_id, scheduled_timestamp, ctx)) = {
+    if let Some((task_id, scheduled_timestamp)) = {
       // The `.map()` -> `.filter()` is to not keep the `.peek()`-ed reference.
       fsm
         .pending_operations
@@ -770,53 +881,104 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         .map(|t| t.scheduled_timestamp <= scheduled_timestamp_cutoff)
         .filter(|b| *b)
         .and_then(|_| fsm.pending_operations.pop())
-        .map(|t| (t.task_id, t.scheduled_timestamp, t.ctx))
+        .map(|t| (t.task_id, t.scheduled_timestamp))
     } {
       let mut maroon_task =
         fsm.active_tasks.remove(&task_id).expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-      let current_state =
-        maroon_task.call_stack.pop().expect("The active task should have at least one state in call stack.");
-      match global_step(current_state, &mut maroon_task.runtime, ctx) {
+      println!("MAROON STEP AT T={scheduled_timestamp}ms");
+      for e in &maroon_task.maroon_stack.maroon_stack_entries {
+        match e {
+          MaroonTaskStackEntry::State(s) => {
+            let n = maroon_task_state_local_vars_count(&s);
+            println!("  state: {s:?}, uses {n} argument(s) above as its local stack.");
+          }
+          MaroonTaskStackEntry::Retrn(r) => {
+            println!("  retrn: {r:?}, awaiting to be `return`-ed into here.");
+          }
+          MaroonTaskStackEntry::Value(v) => {
+            println!("  value: {v:?}");
+          }
+        }
+      }
+
+      let current_stack_entry = maroon_task
+        .maroon_stack
+        .maroon_stack_entries
+        .pop()
+        .expect("The active task should have at least one state in call stack.");
+
+      // Extract the state from the top of the stack. It should be a state, not a value.
+      let current_state = if let MaroonTaskStackEntry::State(state) = &current_stack_entry {
+        state.clone()
+      } else {
+        panic!("Expected a state at the top of the stack, found a value.");
+      };
+
+      // Extract the values.
+      // TODO(dkorolev): They should not be extracted, it should just be a wrapper for the future, of course.
+      let number_of_vars_in_context = maroon_task_state_local_vars_count(&current_state);
+      let mut vars = Vec::new();
+      for _ in 0..number_of_vars_in_context {
+        if let Some(MaroonTaskStackEntry::Value(v)) = maroon_task.maroon_stack.maroon_stack_entries.pop() {
+          vars.push(v);
+        } else {
+          panic!("The value on the stack appears to be a 'function', not a `value`, aborting.");
+        }
+      }
+
+      let step_result = global_step(current_state, vars);
+      println!("MAROON STEP RESULT\n  {step_result:?}");
+      match step_result {
         MaroonStepResult::Done => {
           fsm.active_tasks.remove(&task_id);
         }
-        MaroonStepResult::Next(new_state) => {
-          maroon_task.call_stack.push(new_state);
+        /*
+        MaroonStepResult::OldNext(new_state) => {
+          maroon_task.maroon_stack.maroon_stack_entries.push(MaroonTaskStackEntry::State(new_state));
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
-        MaroonStepResult::Sleep(sleep_ms, new_state) => {
-          maroon_task.call_stack.push(new_state);
+        */
+        MaroonStepResult::Sleep(sleep_ms, new_states_vec) => {
+          // unused_validate_states_vec_or_panic(&new_states_vec);
+          for new_state in new_states_vec.into_iter() {
+            maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
+          }
           let scheduled_timestamp = scheduled_timestamp + sleep_ms;
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
-        MaroonStepResult::Write(text, new_state) => {
+        MaroonStepResult::Write(text, new_states_vec) => {
+          // unused_validate_states_vec_or_panic(&new_states_vec);
           let _ = maroon_task.writer.write_text(text, Some(scheduled_timestamp)).await;
-          maroon_task.call_stack.push(new_state);
+          for new_state in new_states_vec.into_iter() {
+            maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
+          }
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
-        MaroonStepResult::CallU64(call_state, argval, return_state) => {
-          maroon_task.call_stack.push(return_state);
-          maroon_task.call_stack.push(call_state);
+        MaroonStepResult::Next(new_states_vec) => {
+          // unused_validate_states_vec_or_panic(&new_states_vec);
+          for new_state in new_states_vec.into_iter() {
+            maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
+          }
           fsm.active_tasks.insert(task_id, maroon_task);
-          fsm.pending_operations.push(TimestampedMaroonTask::new_with_context_value(
-            scheduled_timestamp,
-            task_id,
-            MaroonContextValue::U64(argval),
-          ));
+          fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
-        MaroonStepResult::ReturnU64(retval) => {
-          fsm.active_tasks.insert(task_id, maroon_task);
-          fsm.pending_operations.push(TimestampedMaroonTask::new_with_context_value(
-            scheduled_timestamp,
-            task_id,
-            MaroonContextValue::U64(retval),
-          ));
+        MaroonStepResult::Return(retval) => {
+          let popped = maroon_task.maroon_stack.maroon_stack_entries.pop().expect("Nowhere to `Return` to!");
+          if let MaroonTaskStackEntry::Retrn(next_state) = popped {
+            maroon_task.maroon_stack.maroon_stack_entries.push(MaroonTaskStackEntry::Value(retval));
+            maroon_task.maroon_stack.maroon_stack_entries.push(MaroonTaskStackEntry::State(next_state));
+            fsm.active_tasks.insert(task_id, maroon_task);
+            fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
+          } else {
+            panic!("Should be `Return`-ing to a state, has `{:?}` on top of the stack instead.", popped);
+          }
         }
       }
+      println!("MAROON STEP DONE\n");
     } else {
       break;
     }
@@ -842,9 +1004,9 @@ async fn main() {
   let app = Router::new()
     .route("/", get(root_handler))
     .route("/add/{a}/{b}", get(add_handler))
-    .route("/delay/{t}/{s}", get(delay_handler))
-    .route("/divisors/{n}", get(divisors_handler))
-    .route("/fibonacci/{n}", get(fibonacci_handler))
+    // .route("/delay/{t}/{s}", get(delay_handler))
+    // .route("/divisors/{n}", get(divisors_handler))
+    // .route("/fibonacci/{n}", get(fibonacci_handler))
     .route("/factorial/{n}", get(factorial_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/state", get(state_handler))
@@ -933,6 +1095,7 @@ mod tests {
     }
   }
 
+  /*
   #[tokio::test]
   async fn test_state_machine_and_execution() {
     let timer = Arc::new(MockTimer::new(0));
@@ -951,7 +1114,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DivisorsTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 12, i: 12 }),
         LogicalTimeAbsoluteMs::from_millis(0),
         "Divisors of 12".to_string(),
@@ -960,7 +1124,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DelayedMessageTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
           delay: LogicalTimeAbsoluteMs::from_millis(225),
           message: "HI".to_string(),
@@ -972,7 +1137,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DelayedMessageTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
           delay: LogicalTimeAbsoluteMs::from_millis(75),
           message: "BYE".to_string(),
@@ -1009,7 +1175,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DivisorsTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 8, i: 8 }),
         LogicalTimeAbsoluteMs::from_millis(10_000),
         "".to_string(),
@@ -1018,7 +1185,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DivisorsTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 9, i: 9 }),
         LogicalTimeAbsoluteMs::from_millis(10_001),
         "".to_string(),
@@ -1027,7 +1195,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::DivisorsTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 3, i: 3 }),
         LogicalTimeAbsoluteMs::from_millis(10_002),
         "".to_string(),
@@ -1072,7 +1241,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::FibonacciTaskBegin,
+        MaroonTaskStack::new(MaroonTaskState::FibonacciTaskBegin),
+        MaroonTaskHeap::empty(),
         MaroonTaskRuntime::Fibonacci(MaroonTaskRuntimeFibonacci {
           n: 5,
           index: 0,
@@ -1101,6 +1271,7 @@ mod tests {
 
     assert_eq!(expected, writer.get_outputs_as_string());
   }
+  */
 
   #[tokio::test]
   async fn test_factorial_task() {
@@ -1120,8 +1291,13 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskState::FactorialBegin,
-        MaroonTaskRuntime::Factorial(MaroonTaskRuntimeFactorial { n: 5, result: 0, next_multiplier: 0 }),
+        MaroonTaskStack {
+          maroon_stack_entries: vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialInput(5)),
+            MaroonTaskStackEntry::State(MaroonTaskState::FactorialEntry),
+          ],
+        },
+        MaroonTaskHeap::empty(),
         LogicalTimeAbsoluteMs::from_millis(0),
         "Factorial of 5".to_string(),
       )
@@ -1131,12 +1307,12 @@ mod tests {
     execute_pending_operations_inner(&mut app_state).await;
 
     let output_at_100 = writer.get_outputs_as_string();
-    assert_eq!(output_at_100, "0ms:4!:5");
+    assert_eq!(output_at_100, "0ms:f(5)");
 
     timer.set_time(1000);
     execute_pending_operations_inner(&mut app_state).await;
 
     let output_at_1000 = writer.get_outputs_as_string();
-    assert_eq!(output_at_1000, "0ms:4!:5;200ms:3!:20;350ms:2!:60;450ms:1!:120;500ms:5!=120");
+    assert_eq!(output_at_1000, "0ms:f(5);250ms:f(4);450ms:f(3);600ms:f(2);700ms:f(1);750ms:5!=120");
   }
 }
