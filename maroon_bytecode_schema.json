@@ -1,0 +1,243 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "MaroonBytecode",
+  "description": "JSON bytecode format for Maroon stack machine",
+  "type": "object",
+  "required": ["version", "functions"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "functions": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/Function"
+      }
+    },
+    "entry_point": {
+      "type": "string",
+      "description": "Name of the entry function"
+    }
+  },
+  "definitions": {
+    "Function": {
+      "type": "object",
+      "required": ["states"],
+      "properties": {
+        "states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/State"
+          }
+        }
+      }
+    },
+    "State": {
+      "type": "object",
+      "required": ["name", "local_vars", "operations"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "State name (e.g., FactorialEntry, FactorialRecursiveCall)"
+        },
+        "local_vars": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of local variables on stack for this state"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Operation"
+          }
+        }
+      }
+    },
+    "Operation": {
+      "oneOf": [
+        {"$ref": "#/definitions/PushStackOp"},
+        {"$ref": "#/definitions/WriteOp"},
+        {"$ref": "#/definitions/SleepOp"},
+        {"$ref": "#/definitions/ReturnOp"},
+        {"$ref": "#/definitions/ConditionalOp"},
+        {"$ref": "#/definitions/DoneOp"}
+      ]
+    },
+    "PushStackOp": {
+      "type": "object",
+      "required": ["type", "entries"],
+      "properties": {
+        "type": {"const": "push_stack"},
+        "entries": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/StackEntry"}
+        }
+      }
+    },
+    "WriteOp": {
+      "type": "object",
+      "required": ["type", "text", "next_state"],
+      "properties": {
+        "type": {"const": "write"},
+        "text": {"type": "string"},
+        "next_state": {"type": "string"}
+      }
+    },
+    "SleepOp": {
+      "type": "object",
+      "required": ["type", "ms", "next_state"],
+      "properties": {
+        "type": {"const": "sleep"},
+        "ms": {"$ref": "#/definitions/Expression"},
+        "next_state": {"type": "string"}
+      }
+    },
+    "ReturnOp": {
+      "type": "object",
+      "required": ["type", "value"],
+      "properties": {
+        "type": {"const": "return"},
+        "value": {"$ref": "#/definitions/Expression"}
+      }
+    },
+    "ConditionalOp": {
+      "type": "object",
+      "required": ["type", "condition", "then", "else"],
+      "properties": {
+        "type": {"const": "conditional"},
+        "condition": {"$ref": "#/definitions/Expression"},
+        "then": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/Operation"}
+        },
+        "else": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/Operation"}
+        }
+      }
+    },
+    "DoneOp": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"const": "done"}
+      }
+    },
+    "StackEntry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["State"],
+          "properties": {
+            "State": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["Retrn"],
+          "properties": {
+            "Retrn": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["Value"],
+          "properties": {
+            "Value": {"$ref": "#/definitions/StackValue"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "StackValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["FactorialInput"],
+          "properties": {
+            "FactorialInput": {"$ref": "#/definitions/Expression"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["FactorialArgument"],
+          "properties": {
+            "FactorialArgument": {"$ref": "#/definitions/Expression"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["FactorialReturnValue"],
+          "properties": {
+            "FactorialReturnValue": {"$ref": "#/definitions/Expression"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "Expression": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["var"],
+          "properties": {
+            "var": {"type": "string"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["const"],
+          "properties": {
+            "const": {"type": "number"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mul"],
+          "properties": {
+            "mul": {
+              "type": "array",
+              "items": {"$ref": "#/definitions/Expression"},
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["sub"],
+          "properties": {
+            "sub": {
+              "type": "array",
+              "items": {"$ref": "#/definitions/Expression"},
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["le"],
+          "properties": {
+            "le": {
+              "type": "array",
+              "items": {"$ref": "#/definitions/Expression"},
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}
