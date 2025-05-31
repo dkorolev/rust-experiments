@@ -348,39 +348,36 @@ enum MaroonStepResult {
 fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> MaroonStepResult {
   match state {
     MaroonTaskState::DelayedMessageTaskBegin => {
-      if let Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)) = vars.get(0) {
-        if let Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)) = vars.get(1) {
-          let delay_ms = *delay_ms;
-          let msg = msg.clone();
-          MaroonStepResult::Sleep(
-            LogicalTimeDeltaMs::from_millis(delay_ms),
-            vec![
-              MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)),
-              MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage(msg)),
-              MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskExecute),
-            ],
-          )
-        } else {
-          panic!("Unexpected argument 1 type in `DelayedMessageTaskBegin`: `{:?}`.", vars.get(1));
-        }
-      } else {
-        panic!("Unexpected argument 0 type in `DelayedMessageTaskBegin`: `{:?}`.", vars.get(0));
-      }
+      let (msg, delay_ms) = match (vars.get(0), vars.get(1)) {
+        (
+          Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)),
+          Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)),
+        ) => (msg.clone(), *delay_ms),
+        _ => panic!("Unexpected arguments in DelayedMessageTaskBegin: {:?}", vars),
+      };
+
+      MaroonStepResult::Sleep(
+        LogicalTimeDeltaMs::from_millis(delay_ms),
+        vec![
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)),
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage(msg)),
+          MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskExecute),
+        ],
+      )
     }
     MaroonTaskState::DelayedMessageTaskExecute => {
-      if let Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)) = vars.get(0) {
-        if let Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)) = vars.get(1) {
-          let delay_ms = *delay_ms;
-          MaroonStepResult::Write(
-            format_delayed_message(LogicalTimeAbsoluteMs::from_millis(delay_ms), msg),
-            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
-          )
-        } else {
-          panic!("Unexpected argument 1 type in `DelayedMessageTaskExecute`: `{:?}`.", vars.get(1));
-        }
-      } else {
-        panic!("Unexpected argument 0 type in `DelayedMessageTaskExecute`: `{:?}`.", vars.get(0));
-      }
+      let (msg, delay_ms) = match (vars.get(0), vars.get(1)) {
+        (
+          Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)),
+          Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)),
+        ) => (msg.clone(), *delay_ms),
+        _ => panic!("Unexpected arguments in DelayedMessageTaskExecute: {:?}", vars),
+      };
+
+      MaroonStepResult::Write(
+        format_delayed_message(LogicalTimeAbsoluteMs::from_millis(delay_ms), &msg),
+        vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+      )
     }
     /*
     MaroonTaskState::DivisorsTaskBegin => {
@@ -486,91 +483,88 @@ fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> 
     }
     */
     MaroonTaskState::FactorialEntry => {
-      if let Some(MaroonTaskStackEntryValue::FactorialInput(n)) = vars.get(0) {
-        let n = *n;
-        MaroonStepResult::Next(vec![
-          // This input should be preserved on the stack when `Retrn` takes place.
-          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialInput(n)),
-          // This is the state to `Return` to.
-          MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialDone),
-          // This the argument to the function, which is the state right below this one.
+      let n = match vars.get(0) {
+        Some(MaroonTaskStackEntryValue::FactorialInput(n)) => *n,
+        _ => panic!("Unexpected arguments in FactorialEntry: {:?}", vars),
+      };
+
+      MaroonStepResult::Next(vec![
+        // This input should be preserved on the stack when `Retrn` takes place.
+        MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialInput(n)),
+        // This is the state to `Return` to.
+        MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialDone),
+        // This the argument to the function, which is the state right below this one.
+        MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+        // And this is the function to be called, which will ultimately `Return` into `FactorialDone`.
+        MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursiveCall),
+      ])
+    }
+    MaroonTaskState::FactorialRecursiveCall => {
+      let n = match vars.get(0) {
+        Some(MaroonTaskStackEntryValue::FactorialArgument(n)) => *n,
+        _ => panic!("Unexpected arguments in FactorialRecursiveCall: {:?}", vars),
+      };
+
+      MaroonStepResult::Write(
+        format!("f({n})"),
+        vec![
           MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
-          // And this is the function to be called, which will ultimately `Return` into `FactorialDone`.
+          MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostWrite),
+        ],
+      )
+    }
+    MaroonTaskState::FactorialRecursionPostWrite => {
+      let n = match vars.get(0) {
+        Some(MaroonTaskStackEntryValue::FactorialArgument(n)) => *n,
+        _ => panic!("Unexpected arguments in FactorialRecursionPostWrite: {:?}", vars),
+      };
+
+      MaroonStepResult::Sleep(
+        LogicalTimeDeltaMs::from_millis(n * 50),
+        vec![
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+          MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostSleep),
+        ],
+      )
+    }
+    MaroonTaskState::FactorialRecursionPostSleep => {
+      let n = match vars.get(0) {
+        Some(MaroonTaskStackEntryValue::FactorialArgument(n)) => *n,
+        _ => panic!("Unexpected arguments in FactorialRecursionPostSleep: {:?}", vars),
+      };
+
+      if n > 1 {
+        MaroonStepResult::Next(vec![
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
+          MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialRecursionPostRecursiveCall),
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n - 1)),
           MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursiveCall),
         ])
       } else {
-        panic!("Unexpected argument 0 type in `FactorialEntry`: `{:?}`.", vars.get(0));
-      }
-    }
-    MaroonTaskState::FactorialRecursiveCall => {
-      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
-        let n = *n;
-        MaroonStepResult::Write(
-          format!("f({n})"),
-          // TODO(dkorolev): This `vars` argument should be a helper accessor, to prevent these unnecessary `move`-s.
-          vec![
-            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
-            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostWrite),
-          ],
-        )
-      } else {
-        panic!("Unexpected argument 0 type in `FactorialRecursiveCall`: `{:?}`.", vars.get(0));
-      }
-    }
-    MaroonTaskState::FactorialRecursionPostWrite => {
-      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
-        let n = *n;
-        MaroonStepResult::Sleep(
-          LogicalTimeDeltaMs::from_millis(n * 50),
-          vec![
-            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
-            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursionPostSleep),
-          ],
-        )
-      } else {
-        panic!("Unexpected argument 0 type in `FactorialRecursionPostWrite`: `{:?}`.", vars.get(0));
-      }
-    }
-    MaroonTaskState::FactorialRecursionPostSleep => {
-      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(0) {
-        let n = *n;
-        if n > 1 {
-          MaroonStepResult::Next(vec![
-            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n)),
-            MaroonTaskStackEntry::Retrn(MaroonTaskState::FactorialRecursionPostRecursiveCall),
-            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::FactorialArgument(n - 1)),
-            MaroonTaskStackEntry::State(MaroonTaskState::FactorialRecursiveCall),
-          ])
-        } else {
-          MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(1))
-        }
-      } else {
-        panic!("Unexpected argument 0 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(0));
+        MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(1))
       }
     }
     MaroonTaskState::FactorialRecursionPostRecursiveCall => {
-      if let Some(MaroonTaskStackEntryValue::FactorialArgument(n)) = vars.get(1) {
-        let n = *n;
-        if let Some(MaroonTaskStackEntryValue::FactorialReturnValue(a)) = vars.get(0) {
-          let a = *a;
-          MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(a * n))
-        } else {
-          panic!("Unexpected argument 0 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(1));
-        }
-      } else {
-        panic!("Unexpected argument 1 type in `FactorialRecursionPostSleep`: `{:?}`.", vars.get(0));
-      }
+      let (a, n) = match (vars.get(0), vars.get(1)) {
+        (
+          Some(MaroonTaskStackEntryValue::FactorialReturnValue(a)),
+          Some(MaroonTaskStackEntryValue::FactorialArgument(n)),
+        ) => (*a, *n),
+        _ => panic!("Unexpected arguments in FactorialRecursionPostRecursiveCall: {:?}", vars),
+      };
+
+      MaroonStepResult::Return(MaroonTaskStackEntryValue::FactorialReturnValue(a * n))
     }
     MaroonTaskState::FactorialDone => {
-      if let Some(MaroonTaskStackEntryValue::FactorialReturnValue(r)) = vars.get(0) {
-        if let Some(MaroonTaskStackEntryValue::FactorialInput(n)) = vars.get(1) {
-          MaroonStepResult::Write(format!("{n}!={r}"), vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)])
-        } else {
-          panic!("Unexpected argument 1 type in `FactorialDone`.");
-        }
-      } else {
-        panic!("Unexpected argument 0 type in `FactorialDone`.");
-      }
+      let (r, n) = match (vars.get(0), vars.get(1)) {
+        (
+          Some(MaroonTaskStackEntryValue::FactorialReturnValue(r)),
+          Some(MaroonTaskStackEntryValue::FactorialInput(n)),
+        ) => (*r, *n),
+        _ => panic!("Unexpected arguments in FactorialDone: {:?}", vars),
+      };
+
+      MaroonStepResult::Write(format!("{n}!={r}"), vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)])
     }
     MaroonTaskState::Completed => MaroonStepResult::Done,
   }
