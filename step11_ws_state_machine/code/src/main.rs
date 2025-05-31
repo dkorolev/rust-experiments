@@ -228,9 +228,7 @@ enum MaroonTaskStackEntryValue {
   FactorialReturnValue(u64),
 }
 
-// For a given state, how many entries on the maroon stack right below ("above") this state are its stack variables.
-// TODO(dkorolev): For now we can (should?) example the contents of the stack manually, this is not done yet.
-// NOTE(dkorolev): Can probably be done better wrt encoding which types they should be, not just the count.
+// For a given `S`, if the maroon stack contains `State(S)`, how many entries above it are its local stack vars.
 const fn maroon_task_state_local_vars_count(e: &MaroonTaskState) -> usize {
   match e {
     MaroonTaskState::FactorialEntry => 1,                      // [FactorialInput]
@@ -239,6 +237,15 @@ const fn maroon_task_state_local_vars_count(e: &MaroonTaskState) -> usize {
     MaroonTaskState::FactorialRecursionPostSleep => 1,         // [FactorialArgument]
     MaroonTaskState::FactorialRecursionPostRecursiveCall => 2, // [FactorialArgument, FactorialReturnValue]
     MaroonTaskState::FactorialDone => 2,                       // [FactorialInput, FactorialReturnValue]
+    _ => 0,
+  }
+}
+
+// For a given `S`, if the maroon stack contains `Retrn(S)`, how many entries above it are its local stack vars.
+const fn maroon_task_state_return_local_vars_count(e: &MaroonTaskState) -> usize {
+  match e {
+    MaroonTaskState::FactorialDone => 1,                       // [FactorialInput]
+    MaroonTaskState::FactorialRecursionPostRecursiveCall => 1, // [FactorialArgument]
     _ => 0,
   }
 }
@@ -842,35 +849,40 @@ async fn execute_pending_operations<T: Timer, W: Writer>(mut state: Arc<AppState
   }
 }
 
-// TODO(dkorolev): Should check the entire stack! Not just its topmost entry.
-fn unused_validate_states_vec_or_panic(new_states_vec: &Vec<MaroonTaskStackEntry>) {
-  let n = new_states_vec.len();
-  if n == 0 {
-    panic!("In `validate_states_vec_or_panic` the `new_states_vec` should not be empty.");
+fn debug_validate_maroon_stack(stk: &Vec<MaroonTaskStackEntry>) {
+  let stack_depth = stk.len();
+  if stack_depth == 0 {
+    panic!("In `debug_validate_maroon_stack` the `stk` should not be empty.");
   } else {
-    if let MaroonTaskStackEntry::State(new_state) = &new_states_vec[0] {
-      if n != maroon_task_state_local_vars_count(&new_state) + 1 {
-        panic!(
-          "In `validate_states_vec_or_panic` expecting {} arguments for state {new_state:?}, seeing {}.",
-          maroon_task_state_local_vars_count(&new_state),
-          n - 1
-        );
+    let mut i = stack_depth - 1;
+    while i > 0 {
+      let n = {
+        if let MaroonTaskStackEntry::State(state) = &stk[i] {
+          maroon_task_state_local_vars_count(&state)
+        } else if let MaroonTaskStackEntry::Retrn(state) = &stk[i] {
+          maroon_task_state_return_local_vars_count(&state)
+        } else {
+          panic!("In `debug_validate_maroon_stack` the `stk[0]` should be a state, not {:?}.", stk[i]);
+        }
+      };
+      if n > i {
+        let state = &stk[i];
+        panic!("In `debug_validate_maroon_stack` expecting {n} arguments for state {state:?}, only have {i} left.",);
       }
-      for i in 1..n {
-        if let MaroonTaskStackEntry::Value(_) = &new_states_vec[i] {
+      for _ in 0..n {
+        i = i - 1;
+        if let MaroonTaskStackEntry::Value(value) = &stk[i] {
           // OK
         } else {
-          panic!(
-            "In `validate_states_vec_or_panic` expecting value, for non-value, pls examine `{:?}`.",
-            new_states_vec
-          );
+          panic!("In `debug_validate_maroon_stack` expecting value, for non-value, pls examine `{:?}`.", stk);
         }
       }
-    } else {
-      panic!(
-        "In `validate_states_vec_or_panic` the `new_states_vec[0]` should not a state, not {:?}.",
-        new_states_vec[0]
-      );
+      if i == 0 {
+        // All good, traversed the entire stack, which was not empty at the beginning of the call, no issues found.
+        break;
+      } else {
+        i = i - 1
+      }
     }
   }
 }
@@ -909,6 +921,9 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
           }
         }
       }
+
+      // Before any work is done, let's validate the maroon stack, to be safe.
+      debug_validate_maroon_stack(&maroon_task.maroon_stack.maroon_stack_entries);
 
       let current_stack_entry = maroon_task
         .maroon_stack
@@ -951,28 +966,28 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         }
         */
         MaroonStepResult::Sleep(sleep_ms, new_states_vec) => {
-          // unused_validate_states_vec_or_panic(&new_states_vec);
           for new_state in new_states_vec.into_iter() {
             maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
           }
+          debug_validate_maroon_stack(&maroon_task.maroon_stack.maroon_stack_entries);
           let scheduled_timestamp = scheduled_timestamp + sleep_ms;
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
         MaroonStepResult::Write(text, new_states_vec) => {
-          // unused_validate_states_vec_or_panic(&new_states_vec);
           let _ = maroon_task.writer.write_text(text, Some(scheduled_timestamp)).await;
           for new_state in new_states_vec.into_iter() {
             maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
           }
+          debug_validate_maroon_stack(&maroon_task.maroon_stack.maroon_stack_entries);
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
         MaroonStepResult::Next(new_states_vec) => {
-          // unused_validate_states_vec_or_panic(&new_states_vec);
           for new_state in new_states_vec.into_iter() {
             maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
           }
+          debug_validate_maroon_stack(&maroon_task.maroon_stack.maroon_stack_entries);
           fsm.active_tasks.insert(task_id, maroon_task);
           fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
         }
