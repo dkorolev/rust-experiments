@@ -849,6 +849,7 @@ async fn execute_pending_operations<T: Timer, W: Writer>(mut state: Arc<AppState
   }
 }
 
+#[cfg(test)]
 fn debug_validate_maroon_stack(stk: &Vec<MaroonTaskStackEntry>) {
   let stack_depth = stk.len();
   if stack_depth == 0 {
@@ -886,6 +887,9 @@ fn debug_validate_maroon_stack(stk: &Vec<MaroonTaskStackEntry>) {
     }
   }
 }
+
+#[cfg(not(test))]
+fn debug_validate_maroon_stack(_: &Vec<MaroonTaskStackEntry>) {}
 
 async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<AppState<T, W>>) {
   loop {
