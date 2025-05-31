@@ -18,6 +18,12 @@ use tokio::{
   sync::{Mutex, mpsc},
 };
 
+#[cfg(test)]
+const DEBUG_MAROON_STATE_DUMP: bool = true;
+
+#[cfg(not(test))]
+const DEBUG_MAROON_STATE_DUMP: bool = false;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct LogicalTimeAbsoluteMs(u64);
 
@@ -886,18 +892,20 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
       let mut maroon_task =
         fsm.active_tasks.remove(&task_id).expect("The task just retrieved from `fsm.pending_operations` should exist.");
 
-      println!("MAROON STEP AT T={scheduled_timestamp}ms");
-      for e in &maroon_task.maroon_stack.maroon_stack_entries {
-        match e {
-          MaroonTaskStackEntry::State(s) => {
-            let n = maroon_task_state_local_vars_count(&s);
-            println!("  state: {s:?}, uses {n} argument(s) above as its local stack.");
-          }
-          MaroonTaskStackEntry::Retrn(r) => {
-            println!("  retrn: {r:?}, awaiting to be `return`-ed into here.");
-          }
-          MaroonTaskStackEntry::Value(v) => {
-            println!("  value: {v:?}");
+      if DEBUG_MAROON_STATE_DUMP {
+        println!("MAROON STEP AT T={scheduled_timestamp}ms");
+        for e in &maroon_task.maroon_stack.maroon_stack_entries {
+          match e {
+            MaroonTaskStackEntry::State(s) => {
+              let n = maroon_task_state_local_vars_count(&s);
+              println!("  state: {s:?}, uses {n} argument(s) above as its local stack.");
+            }
+            MaroonTaskStackEntry::Retrn(r) => {
+              println!("  retrn: {r:?}, awaiting to be `return`-ed into here.");
+            }
+            MaroonTaskStackEntry::Value(v) => {
+              println!("  value: {v:?}");
+            }
           }
         }
       }
@@ -928,7 +936,9 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
       }
 
       let step_result = global_step(current_state, vars);
-      println!("MAROON STEP RESULT\n  {step_result:?}");
+      if DEBUG_MAROON_STATE_DUMP {
+        println!("MAROON STEP RESULT\n  {step_result:?}");
+      }
       match step_result {
         MaroonStepResult::Done => {
           fsm.active_tasks.remove(&task_id);
@@ -978,7 +988,9 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
           }
         }
       }
-      println!("MAROON STEP DONE\n");
+      if DEBUG_MAROON_STATE_DUMP {
+        println!("MAROON STEP DONE\n");
+      }
     } else {
       break;
     }
