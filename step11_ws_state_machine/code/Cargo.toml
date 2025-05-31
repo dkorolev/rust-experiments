@@ -7,3 +7,7 @@ axum = { version = "0.8.3", features = ["ws"] }
 chrono = "0.4"
 clap = { version = "4.0", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
+petgraph = "0.6"
+futures = "0.3"
+async-tungstenite = "0.29"
+tokio-test = "0.4"
