@@ -187,8 +187,6 @@ impl Writer for WebSocketWriter {
 enum MaroonTaskState {
   Completed,
   /*
-  DelayedMessageTaskBegin,
-  DelayedMessageTaskExecute,
   DivisorsTaskBegin,
   DivisorsTaskIteration,
   DivisorsPrintAndMoveOn,
@@ -197,6 +195,8 @@ enum MaroonTaskState {
   FibonacciTaskResult,
   FibonacciTaskStep,
   */
+  DelayedMessageTaskBegin,
+  DelayedMessageTaskExecute,
   FactorialEntry,
   FactorialRecursiveCall,
   FactorialRecursionPostWrite,
@@ -205,24 +205,12 @@ enum MaroonTaskState {
   FactorialDone,
 }
 
-/*
-// TODO(dkorolev): This `MaroonTaskRuntime` will soon be deprecated. Everything will be of "state" `Generic` first,
-// and then `TaskRuntime` will no longer be needed, in favor of "passive" (stateless) "state" as a plain enum,
-// plus the [maroon] stack, plus the [maroon] heap.
-// TODO(dkorolev): In this commit, refactoring begins with Factorial.
-#[derive(Debug)]
-enum MaroonTaskRuntime {
-  Generic,
-  DelayedMessage(MaroonTaskRuntimeDelayedMessage),
-  Divisors(MaroonTaskRuntimeDivisors),
-  Fibonacci(MaroonTaskRuntimeFibonacci),
-}
-*/
-
 // NOTE(dkorolev): These dedicated types are easier for manual development.
 // NOTE(dkorolev): They will all be "type-erased" later on, esp. once we get to the DSL part.
 #[derive(Debug, Clone)]
 enum MaroonTaskStackEntryValue {
+  DelayInputMs(u64),
+  DelayInputMessage(String), // TODO(dkorolev): This `String` contradicts the `u64` promise, but not really.
   FactorialInput(u64),
   FactorialArgument(u64),
   FactorialReturnValue(u64),
@@ -237,6 +225,8 @@ const fn maroon_task_state_local_vars_count(e: &MaroonTaskState) -> usize {
     MaroonTaskState::FactorialRecursionPostSleep => 1,         // [FactorialArgument]
     MaroonTaskState::FactorialRecursionPostRecursiveCall => 2, // [FactorialArgument, FactorialReturnValue]
     MaroonTaskState::FactorialDone => 2,                       // [FactorialInput, FactorialReturnValue]
+    MaroonTaskState::DelayedMessageTaskBegin => 2,             // [DelayInputMs, DelayInputMessage]
+    MaroonTaskState::DelayedMessageTaskExecute => 2,           // [DelayInputMs, DelayInputMessage]
     _ => 0,
   }
 }
@@ -279,12 +269,6 @@ impl MaroonTaskHeap {
 }
 
 /*
-#[derive(Clone, Debug)]
-struct MaroonTaskRuntimeDelayedMessage {
-  delay: LogicalTimeAbsoluteMs,
-  message: String,
-}
-
 #[derive(Clone, Debug)]
 struct MaroonTaskRuntimeDivisors {
   n: u64,
@@ -363,27 +347,42 @@ enum MaroonStepResult {
 
 fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> MaroonStepResult {
   match state {
-    /*
     MaroonTaskState::DelayedMessageTaskBegin => {
-      if let MaroonTaskRuntime::DelayedMessage(data) = runtime {
-        MaroonStepResult::Sleep(
-          LogicalTimeDeltaMs::from_millis(data.delay.as_millis()),
-          vec![MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskExecute)],
-        )
+      if let Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)) = vars.get(0) {
+        if let Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)) = vars.get(1) {
+          let delay_ms = *delay_ms;
+          let msg = msg.clone();
+          MaroonStepResult::Sleep(
+            LogicalTimeDeltaMs::from_millis(delay_ms),
+            vec![
+              MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)),
+              MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage(msg)),
+              MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskExecute),
+            ],
+          )
+        } else {
+          panic!("Unexpected argument 1 type in `DelayedMessageTaskBegin`: `{:?}`.", vars.get(1));
+        }
       } else {
-        panic!("Runtime type mismatch for `DelayedMessageTaskBegin`.");
+        panic!("Unexpected argument 0 type in `DelayedMessageTaskBegin`: `{:?}`.", vars.get(0));
       }
     }
     MaroonTaskState::DelayedMessageTaskExecute => {
-      if let MaroonTaskRuntime::DelayedMessage(data) = runtime {
-        MaroonStepResult::Write(
-          format_delayed_message(data.delay, &data.message),
-          vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
-        )
+      if let Some(MaroonTaskStackEntryValue::DelayInputMessage(msg)) = vars.get(0) {
+        if let Some(MaroonTaskStackEntryValue::DelayInputMs(delay_ms)) = vars.get(1) {
+          let delay_ms = *delay_ms;
+          MaroonStepResult::Write(
+            format_delayed_message(LogicalTimeAbsoluteMs::from_millis(delay_ms), msg),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+          )
+        } else {
+          panic!("Unexpected argument 1 type in `DelayedMessageTaskExecute`: `{:?}`.", vars.get(1));
+        }
       } else {
-        panic!("Runtime type mismatch for `DelayedMessageTaskExecute`.");
+        panic!("Unexpected argument 0 type in `DelayedMessageTaskExecute`: `{:?}`.", vars.get(0));
       }
     }
+    /*
     MaroonTaskState::DivisorsTaskBegin => {
       if let MaroonTaskRuntime::Divisors(data) = runtime {
         data.i = data.n;
@@ -694,31 +693,25 @@ async fn ackermann_handler_ws<T: Timer>(socket: WebSocket, m: i64, n: i64, _stat
   let _ = async_ack(Arc::new(WebSocketWriter::new(socket)), m, n, 0).await;
 }
 
-/*
 async fn delay_handler<T: Timer>(
-  ws: WebSocketUpgrade,
-  Path((t, s)): Path<(u64, String)>,
-  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade, Path((t, s)): Path<(u64, String)>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| delay_handler_ws(socket, state.timer.millis_since_start(), t, s, state))
 }
 
 async fn delay_handler_ws<T: Timer>(
-  socket: WebSocket,
-  ts: LogicalTimeAbsoluteMs,
-  t: u64,
-  s: String,
-  state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, t: u64, s: String, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
-  let runtime = MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
-    delay: LogicalTimeAbsoluteMs::from_millis(t),
-    message: s.clone(),
-  });
-
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
+      MaroonTaskStack {
+        maroon_stack_entries: vec![
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(t)),
+          MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage(s.clone())),
+          MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskBegin),
+        ],
+      },
       MaroonTaskHeap::empty(),
       ts,
       format!("Delayed by {}ms: `{}`.", t, s),
@@ -726,6 +719,7 @@ async fn delay_handler_ws<T: Timer>(
     .await;
 }
 
+/*
 async fn divisors_handler<T: Timer>(
   ws: WebSocketUpgrade,
   Path(a): Path<u64>,
@@ -962,13 +956,6 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         MaroonStepResult::Done => {
           fsm.active_tasks.remove(&task_id);
         }
-        /*
-        MaroonStepResult::OldNext(new_state) => {
-          maroon_task.maroon_stack.maroon_stack_entries.push(MaroonTaskStackEntry::State(new_state));
-          fsm.active_tasks.insert(task_id, maroon_task);
-          fsm.pending_operations.push(TimestampedMaroonTask::new(scheduled_timestamp, task_id));
-        }
-        */
         MaroonStepResult::Sleep(sleep_ms, new_states_vec) => {
           for new_state in new_states_vec.into_iter() {
             maroon_task.maroon_stack.maroon_stack_entries.push(new_state);
@@ -1035,7 +1022,7 @@ async fn main() {
   let app = Router::new()
     .route("/", get(root_handler))
     .route("/add/{a}/{b}", get(add_handler))
-    // .route("/delay/{t}/{s}", get(delay_handler))
+    .route("/delay/{t}/{s}", get(delay_handler))
     // .route("/divisors/{n}", get(divisors_handler))
     // .route("/fibonacci/{n}", get(fibonacci_handler))
     .route("/factorial/{n}", get(factorial_handler))
