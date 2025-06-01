@@ -32,6 +32,7 @@ impl LogicalTimeAbsoluteMs {
     Self(millis)
   }
 
+  #[cfg(test)]
   pub fn as_millis(&self) -> u64 {
     self.0
   }
@@ -230,6 +231,7 @@ const fn maroon_task_state_local_vars_count(e: &MaroonTaskState) -> usize {
 }
 
 // For a given `S`, if the maroon stack contains `Retrn(S)`, how many entries above it are its local stack vars.
+#[cfg(test)]
 const fn maroon_task_state_return_local_vars_count(e: &MaroonTaskState) -> usize {
   match e {
     MaroonTaskState::FactorialDone => 1,                       // [FactorialInput]
@@ -432,57 +434,6 @@ fn global_step(
         }
       } else {
         panic!("Heap type mismatch for `DivisorsTaskBegin`.");
-      }
-    }
-    MaroonTaskState::DivisorsTaskIteration => {
-      if let MaroonTaskHeap::Divisors(data) = heap {
-        let mut i = data.i;
-        while i > 0 && data.n % i != 0 {
-          i -= 1;
-        }
-        if i == 0 {
-          MaroonStepResult::Write(
-            format_divisors_done(data.n),
-            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
-          )
-        } else {
-          data.i = i;
-          MaroonStepResult::Sleep(
-            LogicalTimeDeltaMs::from_millis(i * 10),
-            vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsPrintAndMoveOn)],
-          )
-        }
-      } else {
-        panic!("Heap type mismatch for `DivisorsTaskIteration`.");
-      }
-    }
-    MaroonTaskState::DivisorsPrintAndMoveOn => {
-      if let MaroonTaskHeap::Divisors(data) = heap {
-        let result = MaroonStepResult::Write(
-          format_divisor_found(data.n, data.i),
-          vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskIteration)],
-        );
-        data.i -= 1;
-        result
-      } else {
-        panic!("Heap type mismatch for `DivisorsPrintAndMoveOn`.");
-      }
-    }
-    MaroonTaskState::FibonacciTaskBegin => {
-      if let MaroonTaskHeap::Fibonacci(data) = heap {
-        if data.n <= 1 {
-          MaroonStepResult::Write(
-            format_fibonacci_result(data.n, data.n),
-            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
-          )
-        } else {
-          data.index = 1;
-          data.a = 0;
-          data.b = 1;
-          MaroonStepResult::Next(vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskBegin)])
-        }
-      } else {
-        panic!("Heap type mismatch for `FibonacciTaskBegin`.");
       }
     }
     MaroonTaskState::FibonacciTaskCalculate => {
@@ -890,7 +841,7 @@ fn debug_validate_maroon_stack(stk: &Vec<MaroonTaskStackEntry>) {
       }
       for _ in 0..n {
         i = i - 1;
-        if let MaroonTaskStackEntry::Value(value) = &stk[i] {
+        if let MaroonTaskStackEntry::Value(_) = &stk[i] {
           // OK
         } else {
           panic!("In `debug_validate_maroon_stack` expecting value, for non-value, pls examine `{:?}`.", stk);
