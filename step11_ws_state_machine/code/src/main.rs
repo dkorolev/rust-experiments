@@ -259,22 +259,19 @@ struct MaroonTaskStack {
   maroon_stack_entries: Vec<MaroonTaskStackEntry>,
 }
 
-// NOTE(dkorolev): Empty for now. =)
-struct MaroonTaskHeap {}
-
-impl MaroonTaskHeap {
-  fn empty() -> Self {
-    Self {}
-  }
-}
-
-/*
 #[derive(Clone, Debug)]
-struct MaroonTaskRuntimeDivisors {
+struct MaroonTaskHeapDivisors {
   n: u64,
   i: u64,
 }
 
+#[derive(Clone, Debug)]
+enum MaroonTaskHeap {
+  Empty,
+  Divisors(MaroonTaskHeapDivisors),
+}
+
+/*
 #[derive(Clone, Debug)]
 struct MaroonTaskRuntimeFibonacci {
   n: u64,
@@ -706,7 +703,7 @@ async fn delay_handler_ws<T: Timer>(
           MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskBegin),
         ],
       },
-      MaroonTaskHeap::empty(),
+      MaroonTaskHeap::Empty,
       ts,
       format!("Delayed by {}ms: `{}`.", t, s),
     )
@@ -792,7 +789,7 @@ async fn factorial_handler_ws<T: Timer>(
           MaroonTaskStackEntry::State(MaroonTaskState::FactorialEntry),
         ],
       },
-      MaroonTaskHeap::empty(),
+      MaroonTaskHeap::Empty,
       ts,
       format!("Factorial of {n}"),
     )
@@ -1309,7 +1306,7 @@ mod tests {
             MaroonTaskStackEntry::State(MaroonTaskState::FactorialEntry),
           ],
         },
-        MaroonTaskHeap::empty(),
+        MaroonTaskHeap::Empty,
         LogicalTimeAbsoluteMs::from_millis(0),
         "Factorial of 5".to_string(),
       )
