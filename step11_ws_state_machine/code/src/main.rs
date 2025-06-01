@@ -186,17 +186,15 @@ impl Writer for WebSocketWriter {
 #[derive(Clone, Debug)]
 enum MaroonTaskState {
   Completed,
-  /*
+  DelayedMessageTaskBegin,
+  DelayedMessageTaskExecute,
+  DivisorsTaskBegin,
+  DivisorsTaskIteration,
+  DivisorsPrintAndMoveOn,
   FibonacciTaskBegin,
   FibonacciTaskCalculate,
   FibonacciTaskResult,
   FibonacciTaskStep,
-  */
-  DivisorsTaskBegin,
-  DivisorsTaskIteration,
-  DivisorsPrintAndMoveOn,
-  DelayedMessageTaskBegin,
-  DelayedMessageTaskExecute,
   FactorialEntry,
   FactorialRecursiveCall,
   FactorialRecursionPostWrite,
@@ -266,21 +264,20 @@ struct MaroonTaskHeapDivisors {
 }
 
 #[derive(Clone, Debug)]
-enum MaroonTaskHeap {
-  Empty,
-  Divisors(MaroonTaskHeapDivisors),
-}
-
-/*
-#[derive(Clone, Debug)]
-struct MaroonTaskRuntimeFibonacci {
+struct MaroonTaskHeapFibonacci {
   n: u64,
   index: u64,
   a: u64,
   b: u64,
   delay_ms: LogicalTimeDeltaMs,
 }
-*/
+
+#[derive(Clone, Debug)]
+enum MaroonTaskHeap {
+  Empty,
+  Divisors(MaroonTaskHeapDivisors),
+  Fibonacci(MaroonTaskHeapFibonacci),
+}
 
 #[cfg(not(test))]
 fn format_delayed_message(sleep_ms: LogicalTimeAbsoluteMs, message: &str) -> String {
@@ -420,9 +417,8 @@ fn global_step(
         panic!("Heap type mismatch for `DivisorsPrintAndMoveOn`.");
       }
     }
-    /*
     MaroonTaskState::FibonacciTaskBegin => {
-      if let MaroonTaskRuntime::Fibonacci(data) = runtime {
+      if let MaroonTaskHeap::Fibonacci(data) = heap {
         if data.n <= 1 {
           MaroonStepResult::Write(
             format_fibonacci_result(data.n, data.n),
@@ -432,16 +428,67 @@ fn global_step(
           data.index = 1;
           data.a = 0;
           data.b = 1;
-          MaroonStepResult::OldNext(MaroonTaskState::FibonacciTaskCalculate)
+          MaroonStepResult::Next(vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskCalculate)])
         }
       } else {
-        panic!("Runtime type mismatch for `FibonacciTaskBegin`.");
+        panic!("Heap type mismatch for `DivisorsTaskBegin`.");
+      }
+    }
+    MaroonTaskState::DivisorsTaskIteration => {
+      if let MaroonTaskHeap::Divisors(data) = heap {
+        let mut i = data.i;
+        while i > 0 && data.n % i != 0 {
+          i -= 1;
+        }
+        if i == 0 {
+          MaroonStepResult::Write(
+            format_divisors_done(data.n),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+          )
+        } else {
+          data.i = i;
+          MaroonStepResult::Sleep(
+            LogicalTimeDeltaMs::from_millis(i * 10),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsPrintAndMoveOn)],
+          )
+        }
+      } else {
+        panic!("Heap type mismatch for `DivisorsTaskIteration`.");
+      }
+    }
+    MaroonTaskState::DivisorsPrintAndMoveOn => {
+      if let MaroonTaskHeap::Divisors(data) = heap {
+        let result = MaroonStepResult::Write(
+          format_divisor_found(data.n, data.i),
+          vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskIteration)],
+        );
+        data.i -= 1;
+        result
+      } else {
+        panic!("Heap type mismatch for `DivisorsPrintAndMoveOn`.");
+      }
+    }
+    MaroonTaskState::FibonacciTaskBegin => {
+      if let MaroonTaskHeap::Fibonacci(data) = heap {
+        if data.n <= 1 {
+          MaroonStepResult::Write(
+            format_fibonacci_result(data.n, data.n),
+            vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
+          )
+        } else {
+          data.index = 1;
+          data.a = 0;
+          data.b = 1;
+          MaroonStepResult::Next(vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskBegin)])
+        }
+      } else {
+        panic!("Heap type mismatch for `FibonacciTaskBegin`.");
       }
     }
     MaroonTaskState::FibonacciTaskCalculate => {
-      if let MaroonTaskRuntime::Fibonacci(data) = runtime {
+      if let MaroonTaskHeap::Fibonacci(data) = heap {
         if data.index >= data.n {
-          MaroonStepResult::OldNext(MaroonTaskState::FibonacciTaskResult)
+          MaroonStepResult::Next(vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskResult)])
         } else {
           let delay = 5 * data.index;
           data.delay_ms = LogicalTimeDeltaMs::from_millis(delay);
@@ -451,11 +498,11 @@ fn global_step(
           )
         }
       } else {
-        panic!("Runtime type mismatch for `FibonacciTaskCalculate`.");
+        panic!("Heap type mismatch for `FibonacciTaskCalculate`.");
       }
     }
     MaroonTaskState::FibonacciTaskStep => {
-      if let MaroonTaskRuntime::Fibonacci(data) = runtime {
+      if let MaroonTaskHeap::Fibonacci(data) = heap {
         let next_index = data.index + 1;
         let next_a = data.b;
         let next_b = data.a + data.b;
@@ -467,20 +514,19 @@ fn global_step(
           vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskCalculate)],
         )
       } else {
-        panic!("Runtime type mismatch for `FibonacciTaskStep`.");
+        panic!("Heap type mismatch for `FibonacciTaskStep`.");
       }
     }
     MaroonTaskState::FibonacciTaskResult => {
-      if let MaroonTaskRuntime::Fibonacci(data) = runtime {
+      if let MaroonTaskHeap::Fibonacci(data) = heap {
         MaroonStepResult::Write(
           format_fibonacci_result(data.n, data.b),
           vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
         )
       } else {
-        panic!("Runtime type mismatch for `FibonacciTaskResult`.");
+        panic!("Heap type mismatch for `FibonacciTaskResult`.");
       }
     }
-    */
     MaroonTaskState::FactorialEntry => {
       let n = match vars.get(0) {
         Some(MaroonTaskStackEntryValue::FactorialInput(n)) => *n,
@@ -712,28 +758,20 @@ async fn delay_handler_ws<T: Timer>(
     .await;
 }
 
-/*
 async fn divisors_handler<T: Timer>(
-  ws: WebSocketUpgrade,
-  Path(a): Path<u64>,
-  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade, Path(a): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| divisors_handler_ws(socket, state.timer.millis_since_start(), a, state))
 }
 
 async fn divisors_handler_ws<T: Timer>(
-  socket: WebSocket,
-  ts: LogicalTimeAbsoluteMs,
-  n: u64,
-  state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
-  let runtime = MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n, i: n });
-
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
-      MaroonTaskHeap::empty(),
+      MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskBegin)] },
+      MaroonTaskHeap::Divisors(MaroonTaskHeapDivisors { n, i: n }),
       ts,
       format!("Divisors of {}", n),
     )
@@ -741,37 +779,30 @@ async fn divisors_handler_ws<T: Timer>(
 }
 
 async fn fibonacci_handler<T: Timer>(
-  ws: WebSocketUpgrade,
-  Path(n): Path<u64>,
-  State(state): State<Arc<AppState<T, WebSocketWriter>>>,
+  ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
 ) -> impl IntoResponse {
   ws.on_upgrade(move |socket| fibonacci_handler_ws(socket, state.timer.millis_since_start(), n, state))
 }
 
 async fn fibonacci_handler_ws<T: Timer>(
-  socket: WebSocket,
-  ts: LogicalTimeAbsoluteMs,
-  n: u64,
-  state: Arc<AppState<T, WebSocketWriter>>,
+  socket: WebSocket, ts: LogicalTimeAbsoluteMs, n: u64, state: Arc<AppState<T, WebSocketWriter>>,
 ) {
-  let runtime = MaroonTaskRuntime::Fibonacci(MaroonTaskRuntimeFibonacci {
-    n,
-    index: 0,
-    a: 0,
-    b: 0,
-    delay_ms: LogicalTimeDeltaMs::from_millis(0),
-  });
   state
     .schedule(
       Arc::new(WebSocketWriter::new(socket)),
-      MaroonTaskStack::new(MaroonTaskState::FibonacciTaskBegin),
-      MaroonTaskHeap::empty(),
+      MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskBegin)] },
+      MaroonTaskHeap::Fibonacci(MaroonTaskHeapFibonacci {
+        n,
+        index: 0,
+        a: 0,
+        b: 0,
+        delay_ms: LogicalTimeDeltaMs::from_millis(0),
+      }),
       ts,
       format!("Fibonacci number {n}"),
     )
     .await;
 }
-*/
 
 async fn factorial_handler<T: Timer>(
   ws: WebSocketUpgrade, Path(n): Path<u64>, State(state): State<Arc<AppState<T, WebSocketWriter>>>,
@@ -1016,8 +1047,8 @@ async fn main() {
     .route("/", get(root_handler))
     .route("/add/{a}/{b}", get(add_handler))
     .route("/delay/{t}/{s}", get(delay_handler))
-    // .route("/divisors/{n}", get(divisors_handler))
-    // .route("/fibonacci/{n}", get(fibonacci_handler))
+    .route("/divisors/{n}", get(divisors_handler))
+    .route("/fibonacci/{n}", get(fibonacci_handler))
     .route("/factorial/{n}", get(factorial_handler))
     .route("/ack/{m}/{n}", get(ackermann_handler)) // Do try `/ack/3/4`, but not `/ack/4/*`, hehe.
     .route("/state", get(state_handler))
@@ -1106,7 +1137,6 @@ mod tests {
     }
   }
 
-  /*
   #[tokio::test]
   async fn test_state_machine_and_execution() {
     let timer = Arc::new(MockTimer::new(0));
@@ -1125,9 +1155,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 12, i: 12 }),
+        MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskBegin)] },
+        MaroonTaskHeap::Divisors(MaroonTaskHeapDivisors { n: 12, i: 12 }),
         LogicalTimeAbsoluteMs::from_millis(0),
         "Divisors of 12".to_string(),
       )
@@ -1135,12 +1164,14 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
-          delay: LogicalTimeAbsoluteMs::from_millis(225),
-          message: "HI".to_string(),
-        }),
+        MaroonTaskStack {
+          maroon_stack_entries: vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(225)),
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage("HI".to_string())),
+            MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskBegin),
+          ],
+        },
+        MaroonTaskHeap::Empty,
         LogicalTimeAbsoluteMs::from_millis(0),
         "Hello".to_string(),
       )
@@ -1148,12 +1179,14 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DelayedMessageTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::DelayedMessage(MaroonTaskRuntimeDelayedMessage {
-          delay: LogicalTimeAbsoluteMs::from_millis(75),
-          message: "BYE".to_string(),
-        }),
+        MaroonTaskStack {
+          maroon_stack_entries: vec![
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMs(75)),
+            MaroonTaskStackEntry::Value(MaroonTaskStackEntryValue::DelayInputMessage("BYE".to_string())),
+            MaroonTaskStackEntry::State(MaroonTaskState::DelayedMessageTaskBegin),
+          ],
+        },
+        MaroonTaskHeap::Empty,
         LogicalTimeAbsoluteMs::from_millis(200),
         "Bye".to_string(),
       )
@@ -1186,9 +1219,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 8, i: 8 }),
+        MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskBegin)] },
+        MaroonTaskHeap::Divisors(MaroonTaskHeapDivisors { n: 8, i: 8 }),
         LogicalTimeAbsoluteMs::from_millis(10_000),
         "".to_string(),
       )
@@ -1196,9 +1228,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 9, i: 9 }),
+        MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskBegin)] },
+        MaroonTaskHeap::Divisors(MaroonTaskHeapDivisors { n: 9, i: 9 }),
         LogicalTimeAbsoluteMs::from_millis(10_001),
         "".to_string(),
       )
@@ -1206,9 +1237,8 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::DivisorsTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::Divisors(MaroonTaskRuntimeDivisors { n: 3, i: 3 }),
+        MaroonTaskStack { maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskBegin)] },
+        MaroonTaskHeap::Divisors(MaroonTaskHeapDivisors { n: 3, i: 3 }),
         LogicalTimeAbsoluteMs::from_millis(10_002),
         "".to_string(),
       )
@@ -1252,9 +1282,10 @@ mod tests {
     app_state
       .schedule(
         Arc::clone(&writer),
-        MaroonTaskStack::new(MaroonTaskState::FibonacciTaskBegin),
-        MaroonTaskHeap::empty(),
-        MaroonTaskRuntime::Fibonacci(MaroonTaskRuntimeFibonacci {
+        MaroonTaskStack {
+          maroon_stack_entries: vec![MaroonTaskStackEntry::State(MaroonTaskState::FibonacciTaskBegin)],
+        },
+        MaroonTaskHeap::Fibonacci(MaroonTaskHeapFibonacci {
           n: 5,
           index: 0,
           a: 0,
@@ -1282,7 +1313,6 @@ mod tests {
 
     assert_eq!(expected, writer.get_outputs_as_string());
   }
-  */
 
   #[tokio::test]
   async fn test_factorial_task() {
