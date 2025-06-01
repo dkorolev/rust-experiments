@@ -187,14 +187,14 @@ impl Writer for WebSocketWriter {
 enum MaroonTaskState {
   Completed,
   /*
-  DivisorsTaskBegin,
-  DivisorsTaskIteration,
-  DivisorsPrintAndMoveOn,
   FibonacciTaskBegin,
   FibonacciTaskCalculate,
   FibonacciTaskResult,
   FibonacciTaskStep,
   */
+  DivisorsTaskBegin,
+  DivisorsTaskIteration,
+  DivisorsPrintAndMoveOn,
   DelayedMessageTaskBegin,
   DelayedMessageTaskExecute,
   FactorialEntry,
@@ -342,7 +342,9 @@ enum MaroonStepResult {
   Return(MaroonTaskStackEntryValue),
 }
 
-fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> MaroonStepResult {
+fn global_step(
+  state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>, heap: &mut MaroonTaskHeap,
+) -> MaroonStepResult {
   match state {
     MaroonTaskState::DelayedMessageTaskBegin => {
       let (msg, delay_ms) = match (vars.get(0), vars.get(1)) {
@@ -376,17 +378,16 @@ fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> 
         vec![MaroonTaskStackEntry::State(MaroonTaskState::Completed)],
       )
     }
-    /*
     MaroonTaskState::DivisorsTaskBegin => {
-      if let MaroonTaskRuntime::Divisors(data) = runtime {
+      if let MaroonTaskHeap::Divisors(data) = heap {
         data.i = data.n;
-        MaroonStepResult::OldNext(MaroonTaskState::DivisorsTaskIteration)
+        MaroonStepResult::Next(vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskIteration)])
       } else {
-        panic!("Runtime type mismatch for `DivisorsTaskBegin`.");
+        panic!("Heap type mismatch for `DivisorsTaskBegin`.");
       }
     }
     MaroonTaskState::DivisorsTaskIteration => {
-      if let MaroonTaskRuntime::Divisors(data) = runtime {
+      if let MaroonTaskHeap::Divisors(data) = heap {
         let mut i = data.i;
         while i > 0 && data.n % i != 0 {
           i -= 1;
@@ -404,11 +405,11 @@ fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> 
           )
         }
       } else {
-        panic!("Runtime type mismatch for `DivisorsTaskIteration`.");
+        panic!("Heap type mismatch for `DivisorsTaskIteration`.");
       }
     }
     MaroonTaskState::DivisorsPrintAndMoveOn => {
-      if let MaroonTaskRuntime::Divisors(data) = runtime {
+      if let MaroonTaskHeap::Divisors(data) = heap {
         let result = MaroonStepResult::Write(
           format_divisor_found(data.n, data.i),
           vec![MaroonTaskStackEntry::State(MaroonTaskState::DivisorsTaskIteration)],
@@ -416,9 +417,10 @@ fn global_step(state: MaroonTaskState, vars: Vec<MaroonTaskStackEntryValue>) -> 
         data.i -= 1;
         result
       } else {
-        panic!("Runtime type mismatch for `DivisorsPrintAndMoveOn`.");
+        panic!("Heap type mismatch for `DivisorsPrintAndMoveOn`.");
       }
     }
+    /*
     MaroonTaskState::FibonacciTaskBegin => {
       if let MaroonTaskRuntime::Fibonacci(data) = runtime {
         if data.n <= 1 {
@@ -939,7 +941,7 @@ async fn execute_pending_operations_inner<T: Timer, W: Writer>(state: &mut Arc<A
         }
       }
 
-      let step_result = global_step(current_state, vars);
+      let step_result = global_step(current_state, vars, &mut maroon_task.maroon_heap);
       if DEBUG_MAROON_STATE_DUMP {
         println!("MAROON STEP RESULT\n  {step_result:?}");
       }
