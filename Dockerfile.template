@@ -4,6 +4,8 @@ FROM alpine AS build
 # Intentionally not installing `cargo`, etc. But it does need `clang`.
 RUN apk add rustup clang musl
 
+# PLACEHOLDER_BUILD
+
 # Init local rust via `rustup`, including static targets builder.
 RUN rustup-init -y -t "$(uname -m)-unknown-linux-musl" --no-modify-path 
 RUN mv /root/.cargo/bin/* /usr/local/bin/
@@ -23,4 +25,5 @@ RUN cargo test --release -- --test-threads=1
 # The resulting container with the static binary only.
 FROM scratch
 COPY --from=build /binary /binary
+# PLACEHOLDER_RUN
 ENTRYPOINT ["/binary"]
