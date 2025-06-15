@@ -1,0 +1,8 @@
+[package]
+name = "maxmindb"
+edition = "2021"
+
+[dependencies]
+maxminddb = "0.21.0"
+tokio = { version = "1.0", features = ["full"] }
+trust-dns-resolver = "0.23.2"
