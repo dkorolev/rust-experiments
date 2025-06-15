@@ -6,7 +6,7 @@ use trust_dns_resolver::TokioAsyncResolver;
 
 const OPENDNS_SERVER: &str = "208.67.222.222:53";
 const OPENDNS_MYIP_DOMAIN: &str = "myip.opendns.com.";
-const GEOIP_DB_PATH: &str = "GeoLite2-Country.mmdb";
+const GEOIP_DB_PATH: &str = "GeoLite2-City.mmdb";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,6 +43,8 @@ fn map_ip_to_geo(ip: IpAddr) -> Result<(), Box<dyn std::error::Error>> {
 
   let reader = Reader::open_readfile(GEOIP_DB_PATH)?;
   let result: maxminddb::geoip2::City = reader.lookup(ip)?;
+
+  println!("{:#?}", result);
 
   let iso = result.country.unwrap().iso_code;
   println!("{iso:?}");
